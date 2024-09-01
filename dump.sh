@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+cargo objdump --quiet -- --disassemble-all --demangle --section=.text --section=.rodata --section=.data --mcpu=cortex-m4 &> disassembly.s && cargo objdump --quiet -- --syms --demangle --show-lma --mcpu=cortex-m4 | sort > syms
