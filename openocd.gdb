@@ -12,7 +12,7 @@ set backtrace limit 32
 break DefaultHandler
 break HardFault
 # we don't unwind
-# break rust_begin_unwind
+break rust_begin_unwind
 # # run the next few lines so the panic message is printed immediately
 # # the number needs to be adjusted for your panic handler
 # commands $bpnum
