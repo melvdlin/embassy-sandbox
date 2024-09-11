@@ -9,8 +9,8 @@ set print asm-demangle on
 set backtrace limit 32
 
 # detect unhandled exceptions, hard faults and panics
-break DefaultHandler
-break HardFault
+# break DefaultHandler
+# break HardFault
 # we don't unwind
 break rust_begin_unwind
 # # run the next few lines so the panic message is printed immediately
