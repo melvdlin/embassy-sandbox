@@ -4,6 +4,7 @@
 #![feature(async_closure)]
 #![feature(core_intrinsics)]
 
+use core::fmt::Write as FmtWrite;
 use core::intrinsics::breakpoint;
 use core::str::FromStr;
 use embassy_executor::Spawner;
@@ -12,13 +13,14 @@ use embassy_futures::yield_now;
 use embassy_net::Stack;
 use embassy_stm32::eth::PacketQueue;
 use embassy_stm32::{bind_interrupts, gpio, Peripheral};
+use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer};
-use embedded_io_async::Write;
+use embedded_io_async::Write as AsyncWrite;
 use heapless::String;
 #[allow(unused_imports)]
 use panic_halt as _;
 use rand_core::RngCore;
-use smoltcp::socket::dhcpv4::RetryConfig;
 use static_cell::{ConstStaticCell, StaticCell};
 
 const HOSTNAME: &str = "STM32F7-DISCO";
@@ -47,6 +49,8 @@ async fn main(spawner: Spawner) -> ! {
     _main(spawner).await
 }
 
+static DHCP_UP: Signal<ThreadModeRawMutex, ()> = Signal::new();
+
 async fn _main(spawner: Spawner) -> ! {
     let p = embassy_stm32::init(config());
 
@@ -73,7 +77,9 @@ async fn blink(
     let mut ld2 = ld2;
     loop {
         ld1.set_high();
-        ld2.set_high();
+        if DHCP_UP.signaled() {
+            ld2.set_high();
+        }
 
         Timer::after_millis(500).await;
         ld1.set_low();
@@ -109,12 +115,12 @@ async fn echo(
 ) -> ! {
     use embassy_net::*;
     let net_cfg =
-        Config::dhcpv4(dhcp_config(hostname).unwrap() /*Default::default()*/);
-    // Config::ipv4_static(StaticConfigV4 {
-    //     address: Ipv4Cidr::new(Ipv4Address([192, 168, 2, 194]), 0),
-    //     gateway: None,
-    //     dns_servers: Default::default(),
-    // });
+        // Config::dhcpv4(dhcp_config(hostname).unwrap() /*Default::default()*/);
+    Config::ipv4_static(StaticConfigV4 {
+        address: Ipv4Cidr::new(Ipv4Address([192, 168, 2, 43]), 24),
+        gateway: None,
+        dns_servers: Default::default(),
+    });
 
     static PACKET_QUEUE: ConstStaticCell<PacketQueue<8, 8>> =
         ConstStaticCell::new(PacketQueue::new());
@@ -143,18 +149,13 @@ async fn echo(
 
     let mut server_rx_buf = [0; 4096];
     let mut server_tx_buf = [0; 4096];
-    //
-    // let mut client_rx_buf = [0; 512];
-    // let mut client_tx_buf = [0; 512];
 
     static STACK: StaticCell<Stack<Device>> = StaticCell::new();
     let stack = STACK.init(Stack::new(ethernet, net_cfg, resources, seeds[0]));
 
     spawner.must_spawn(net_task(stack));
     stack.wait_config_up().await;
-    unsafe {
-        breakpoint();
-    }
+
     let config = (async || loop {
         if let Some(config) = stack.config_v4() {
             return config;
@@ -163,68 +164,45 @@ async fn echo(
     })()
     .await;
     let addr = config.address.address();
-    let addr = addr;
-    unsafe {
-        breakpoint();
-    }
+    let _addr = addr;
+    DHCP_UP.signal(());
 
     let mut server = tcp::TcpSocket::new(&stack, &mut server_rx_buf, &mut server_tx_buf);
-    server.set_timeout(Some(Duration::from_secs(20)));
-    // let mut client = tcp::TcpSocket::new(&stack, &mut client_rx_buf, &mut client_tx_buf);
+    server.set_timeout(Some(Duration::from_secs(120)));
     let config_v4 = stack.config_v4();
-    let config_v4 = config_v4;
+    let _config_v4 = config_v4;
 
     let mut server = async move || loop {
         if let Err(e) = server.accept(1234).await {
-            let e = e;
+            let _e = e;
             Timer::after_secs(1).await;
             continue;
         }
 
         let mut buf = [0; 512];
+        let mut fmt = String::<1026>::new();
         loop {
             let len = match server.read(&mut buf).await {
                 | Err(_) | Ok(0) => break,
                 | Ok(len) => len,
             };
+            let buf = &buf[..len];
 
-            if server.write_all(&buf[..len]).await.is_err() {
+            for n in buf {
+                fmt.write_fmt(format_args!("{:02x}", n))
+                    .expect("fmt buffer should fit entire formatted input");
+            }
+            fmt.write_str("\r\n")
+                .expect("fmt buffer should fit formatted input plus crlf");
+
+            if server.write_all(fmt.as_bytes()).await.is_err() {
                 break;
             }
+            fmt.clear();
         }
+        server.close();
         let _ = server.flush().await;
     };
-    //
-    // let mut client = async move || loop {
-    //     if let Err(err) = client
-    //         .connect((Ipv4Address::new(127, 0, 0, 1), 1234))
-    //         .await
-    //     {
-    //         unsafe {
-    //             core::intrinsics::breakpoint();
-    //         }
-    //         Timer::after_secs(1).await;
-    //         continue;
-    //     }
-    //     unsafe {
-    //         core::intrinsics::breakpoint();
-    //     }
-    //     let mut buf = [0; 512];
-    //     if client.write_all("1234".as_bytes()).await.is_err()
-    //         || client.flush().await.is_err()
-    //     {
-    //         continue;
-    //     }
-    //
-    //     loop {
-    //         let len = match client.read(&mut buf).await {
-    //             | Err(_) | Ok(0) => break,
-    //             | Ok(len) => len,
-    //         };
-    //         let buf = &mut buf[..len];
-    //         let buf = buf;
-    //     }
-    // };
 
     server().await
 }
