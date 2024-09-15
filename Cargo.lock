@@ -166,7 +166,7 @@ dependencies = [
 [[package]]
 name = "embassy-embedded-hal"
 version = "0.2.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b#3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b"
+source = "git+https://github.com/melvdlin/embassy.git?rev=3108416633ca5d236c2bab6d2babbcd6c3a4cca9#3108416633ca5d236c2bab6d2babbcd6c3a4cca9"
 dependencies = [
  "embassy-futures",
  "embassy-sync",
@@ -182,7 +182,7 @@ dependencies = [
 [[package]]
 name = "embassy-executor"
 version = "0.6.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b#3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b"
+source = "git+https://github.com/melvdlin/embassy.git?rev=3108416633ca5d236c2bab6d2babbcd6c3a4cca9#3108416633ca5d236c2bab6d2babbcd6c3a4cca9"
 dependencies = [
  "cortex-m",
  "critical-section",
@@ -195,7 +195,7 @@ dependencies = [
 [[package]]
 name = "embassy-executor-macros"
 version = "0.5.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b#3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b"
+source = "git+https://github.com/melvdlin/embassy.git?rev=3108416633ca5d236c2bab6d2babbcd6c3a4cca9#3108416633ca5d236c2bab6d2babbcd6c3a4cca9"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -206,12 +206,12 @@ dependencies = [
 [[package]]
 name = "embassy-futures"
 version = "0.1.1"
-source = "git+https://github.com/embassy-rs/embassy?rev=3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b#3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b"
+source = "git+https://github.com/melvdlin/embassy.git?rev=3108416633ca5d236c2bab6d2babbcd6c3a4cca9#3108416633ca5d236c2bab6d2babbcd6c3a4cca9"
 
 [[package]]
 name = "embassy-hal-internal"
 version = "0.2.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b#3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b"
+source = "git+https://github.com/melvdlin/embassy.git?rev=3108416633ca5d236c2bab6d2babbcd6c3a4cca9#3108416633ca5d236c2bab6d2babbcd6c3a4cca9"
 dependencies = [
  "cortex-m",
  "critical-section",
@@ -221,7 +221,7 @@ dependencies = [
 [[package]]
 name = "embassy-net"
 version = "0.4.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b#3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b"
+source = "git+https://github.com/melvdlin/embassy.git?rev=3108416633ca5d236c2bab6d2babbcd6c3a4cca9#3108416633ca5d236c2bab6d2babbcd6c3a4cca9"
 dependencies = [
  "document-features",
  "embassy-net-driver",
@@ -237,7 +237,7 @@ dependencies = [
 [[package]]
 name = "embassy-net-driver"
 version = "0.2.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b#3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b"
+source = "git+https://github.com/melvdlin/embassy.git?rev=3108416633ca5d236c2bab6d2babbcd6c3a4cca9#3108416633ca5d236c2bab6d2babbcd6c3a4cca9"
 
 [[package]]
 name = "embassy-sandbox"
@@ -266,7 +266,7 @@ dependencies = [
 [[package]]
 name = "embassy-stm32"
 version = "0.1.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b#3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b"
+source = "git+https://github.com/melvdlin/embassy.git?rev=3108416633ca5d236c2bab6d2babbcd6c3a4cca9#3108416633ca5d236c2bab6d2babbcd6c3a4cca9"
 dependencies = [
  "aligned",
  "bit_field",
@@ -311,7 +311,7 @@ dependencies = [
 [[package]]
 name = "embassy-sync"
 version = "0.6.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b#3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b"
+source = "git+https://github.com/melvdlin/embassy.git?rev=3108416633ca5d236c2bab6d2babbcd6c3a4cca9#3108416633ca5d236c2bab6d2babbcd6c3a4cca9"
 dependencies = [
  "cfg-if",
  "critical-section",
@@ -323,7 +323,7 @@ dependencies = [
 [[package]]
 name = "embassy-time"
 version = "0.3.2"
-source = "git+https://github.com/embassy-rs/embassy?rev=3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b#3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b"
+source = "git+https://github.com/melvdlin/embassy.git?rev=3108416633ca5d236c2bab6d2babbcd6c3a4cca9#3108416633ca5d236c2bab6d2babbcd6c3a4cca9"
 dependencies = [
  "cfg-if",
  "critical-section",
@@ -340,7 +340,7 @@ dependencies = [
 [[package]]
 name = "embassy-time-driver"
 version = "0.1.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b#3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b"
+source = "git+https://github.com/melvdlin/embassy.git?rev=3108416633ca5d236c2bab6d2babbcd6c3a4cca9#3108416633ca5d236c2bab6d2babbcd6c3a4cca9"
 dependencies = [
  "document-features",
 ]
@@ -348,17 +348,17 @@ dependencies = [
 [[package]]
 name = "embassy-time-queue-driver"
 version = "0.1.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b#3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b"
+source = "git+https://github.com/melvdlin/embassy.git?rev=3108416633ca5d236c2bab6d2babbcd6c3a4cca9#3108416633ca5d236c2bab6d2babbcd6c3a4cca9"
 
 [[package]]
 name = "embassy-usb-driver"
 version = "0.1.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b#3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b"
+source = "git+https://github.com/melvdlin/embassy.git?rev=3108416633ca5d236c2bab6d2babbcd6c3a4cca9#3108416633ca5d236c2bab6d2babbcd6c3a4cca9"
 
 [[package]]
 name = "embassy-usb-synopsys-otg"
 version = "0.1.0"
-source = "git+https://github.com/embassy-rs/embassy?rev=3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b#3d6a270f30c45eaf394c8eb8bf182dd1a7ec2d7b"
+source = "git+https://github.com/melvdlin/embassy.git?rev=3108416633ca5d236c2bab6d2babbcd6c3a4cca9#3108416633ca5d236c2bab6d2babbcd6c3a4cca9"
 dependencies = [
  "critical-section",
  "embassy-sync",
