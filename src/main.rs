@@ -3,8 +3,10 @@
 #![feature(impl_trait_in_assoc_type)]
 #![feature(async_closure)]
 #![feature(core_intrinsics)]
+#![allow(internal_features)]
 
 use core::fmt::Write as FmtWrite;
+#[allow(unused)]
 use core::intrinsics::breakpoint;
 use core::str::FromStr;
 use embassy_executor::Spawner;
@@ -69,10 +71,7 @@ async fn _main(spawner: Spawner) -> ! {
     join(blink, echo).await.0
 }
 
-async fn blink(
-    ld1: gpio::Output<'_, impl gpio::Pin>,
-    ld2: gpio::Output<'_, impl gpio::Pin>,
-) -> ! {
+async fn blink(ld1: gpio::Output<'_>, ld2: gpio::Output<'_>) -> ! {
     let mut ld1 = ld1;
     let mut ld2 = ld2;
     loop {
@@ -95,11 +94,12 @@ async fn blink(
     }
 }
 
+#[allow(clippy::upper_case_acronyms)]
 type ETH = embassy_stm32::peripherals::ETH;
 #[allow(clippy::too_many_arguments)]
 async fn echo(
     spawner: Spawner,
-    hostname: impl AsRef<str>,
+    #[allow(unused)] hostname: impl AsRef<str>,
     mac_addr: [u8; 6],
     seeds: [u64; 2],
     eth: ETH,
@@ -156,18 +156,17 @@ async fn echo(
     spawner.must_spawn(net_task(stack));
     stack.wait_config_up().await;
 
-    let config = (async || loop {
+    let config = loop {
         if let Some(config) = stack.config_v4() {
-            return config;
+            break config;
         }
         yield_now().await;
-    })()
-    .await;
+    };
     let addr = config.address.address();
     let _addr = addr;
     DHCP_UP.signal(());
 
-    let mut server = tcp::TcpSocket::new(&stack, &mut server_rx_buf, &mut server_tx_buf);
+    let mut server = tcp::TcpSocket::new(stack, &mut server_rx_buf, &mut server_tx_buf);
     server.set_timeout(Some(Duration::from_secs(120)));
     let config_v4 = stack.config_v4();
     let _config_v4 = config_v4;
@@ -229,6 +228,7 @@ fn config() -> embassy_stm32::Config {
     config
 }
 
+#[allow(unused)]
 fn dhcp_config(hostname: impl AsRef<str>) -> Result<embassy_net::DhcpConfig, ()> {
     let mut config = embassy_net::DhcpConfig::default();
     config.hostname = Some(String::from_str(hostname.as_ref())?);

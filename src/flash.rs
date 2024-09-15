@@ -1,11 +1,12 @@
 use bitflags::bitflags;
+use embassy_stm32::mode::Async;
 use embassy_stm32::qspi::enums::QspiWidth;
 use embassy_stm32::qspi::{Instance, Qspi};
 
-pub struct Device<'d, T: embassy_stm32::qspi::Instance, Dma> {
+pub struct Device<'d, T: embassy_stm32::qspi::Instance> {
     size: u32,
     state: State,
-    spi: Qspi<'d, T, Dma>,
+    spi: Qspi<'d, T, Async>,
 }
 
 enum State {
@@ -18,7 +19,7 @@ pub enum Mode {
     QPI,
 }
 
-impl<'d, T: Instance, Dma> Device<'d, T, Dma> {
+impl<'d, T: Instance> Device<'d, T> {
     async fn init(&mut self) {}
 }
 
@@ -165,6 +166,7 @@ pub mod instruction {
 }
 
 // noinspection DuplicatedCode
+#[allow(clippy::needless_update)]
 pub mod transfer {
     use super::{instruction, Mode};
     use embassy_stm32::qspi::enums::{DummyCycles, QspiWidth};
@@ -197,7 +199,6 @@ pub mod transfer {
     pub fn rdid() -> TransferConfig {
         TransferConfig {
             instruction: instruction::RDID,
-            data_len: Some(3),
             iwidth: Mode::SPI.into(),
             dwidth: Mode::SPI.into(),
             ..Default::default()
@@ -219,7 +220,6 @@ pub mod transfer {
                 | Mode::SPI => DummyCycles::_8,
                 | Mode::QPI => DummyCycles::_2,
             },
-            data_len: Some(1),
             iwidth: mode.into(),
             dwidth: mode.into(),
             ..Default::default()
@@ -230,7 +230,6 @@ pub mod transfer {
         TransferConfig {
             instruction: instruction::REMS,
             address: Some(device_id_first as u32),
-            data_len: Some(2),
             iwidth: Mode::SPI.into(),
             awidth: QspiWidth::SING,
             dwidth: Mode::SPI.into(),
@@ -241,7 +240,6 @@ pub mod transfer {
     pub fn qpiid() -> TransferConfig {
         TransferConfig {
             instruction: instruction::QPIID,
-            data_len: Some(3),
             iwidth: Mode::QPI.into(),
             dwidth: Mode::QPI.into(),
             ..Default::default()
@@ -251,7 +249,6 @@ pub mod transfer {
     pub fn rdsr(mode: Mode) -> TransferConfig {
         TransferConfig {
             instruction: instruction::RDSR,
-            data_len: Some(1),
             iwidth: mode.into(),
             dwidth: mode.into(),
             ..Default::default()
@@ -261,17 +258,15 @@ pub mod transfer {
     pub fn rdcr(mode: Mode) -> TransferConfig {
         TransferConfig {
             instruction: instruction::RDCR,
-            data_len: Some(1),
             iwidth: mode.into(),
             dwidth: mode.into(),
             ..Default::default()
         }
     }
 
-    pub fn wrsr(mode: Mode, write_cr: bool) -> TransferConfig {
+    pub fn wrsr(mode: Mode) -> TransferConfig {
         TransferConfig {
             instruction: instruction::WRSR,
-            data_len: Some(1 + write_cr as usize),
             iwidth: mode.into(),
             dwidth: mode.into(),
             ..Default::default()
@@ -294,11 +289,10 @@ pub mod transfer {
         }
     }
 
-    pub fn read(address: u32, len: usize) -> TransferConfig {
+    pub fn read(address: u32) -> TransferConfig {
         TransferConfig {
             instruction: instruction::READ,
             address: Some(address),
-            data_len: Some(len),
             iwidth: Mode::SPI.into(),
             awidth: Mode::SPI.into(),
             dwidth: Mode::SPI.into(),
@@ -306,12 +300,11 @@ pub mod transfer {
         }
     }
 
-    pub fn fast_read(address: u32, len: usize, dummy: DummyCycles) -> TransferConfig {
+    pub fn fast_read(address: u32, dummy: DummyCycles) -> TransferConfig {
         TransferConfig {
             instruction: instruction::FAST_READ,
             address: Some(address),
             dummy,
-            data_len: Some(len),
             iwidth: Mode::SPI.into(),
             awidth: Mode::SPI.into(),
             dwidth: Mode::SPI.into(),
@@ -319,12 +312,11 @@ pub mod transfer {
         }
     }
 
-    pub fn dread(address: u32, len: usize, dummy: DummyCycles) -> TransferConfig {
+    pub fn dread(address: u32, dummy: DummyCycles) -> TransferConfig {
         TransferConfig {
             instruction: instruction::DREAD,
             address: Some(address),
             dummy,
-            data_len: Some(len),
             iwidth: Mode::SPI.into(),
             awidth: Mode::SPI.into(),
             dwidth: QspiWidth::DUAL,
@@ -332,12 +324,11 @@ pub mod transfer {
         }
     }
 
-    pub fn _2read(address: u32, len: usize, dummy: DummyCycles) -> TransferConfig {
+    pub fn _2read(address: u32, dummy: DummyCycles) -> TransferConfig {
         TransferConfig {
             instruction: instruction::_2READ,
             address: Some(address),
             dummy,
-            data_len: Some(len),
             iwidth: Mode::SPI.into(),
             awidth: QspiWidth::DUAL,
             dwidth: QspiWidth::DUAL,
@@ -345,12 +336,11 @@ pub mod transfer {
         }
     }
 
-    pub fn qread(address: u32, len: usize, dummy: DummyCycles) -> TransferConfig {
+    pub fn qread(address: u32, dummy: DummyCycles) -> TransferConfig {
         TransferConfig {
             instruction: instruction::QREAD,
             address: Some(address),
             dummy,
-            data_len: Some(len),
             iwidth: Mode::SPI.into(),
             awidth: Mode::SPI.into(),
             dwidth: QspiWidth::QUAD,
@@ -358,17 +348,11 @@ pub mod transfer {
         }
     }
 
-    pub fn _4read(
-        mode: Mode,
-        address: u32,
-        len: usize,
-        dummy: DummyCycles,
-    ) -> TransferConfig {
+    pub fn _4read(mode: Mode, address: u32, dummy: DummyCycles) -> TransferConfig {
         TransferConfig {
             instruction: instruction::_4READ,
             address: Some(address),
             dummy,
-            data_len: Some(len),
             iwidth: mode.into(),
             awidth: QspiWidth::QUAD,
             dwidth: QspiWidth::QUAD,
@@ -376,12 +360,11 @@ pub mod transfer {
         }
     }
 
-    pub fn fastdtrd(address: u32, len: usize, dummy: DummyCycles) -> TransferConfig {
+    pub fn fastdtrd(address: u32, dummy: DummyCycles) -> TransferConfig {
         TransferConfig {
             instruction: instruction::FASTDTRD,
             address: Some(address),
             dummy,
-            data_len: Some(len),
             iwidth: Mode::SPI.into(),
             awidth: QspiWidth::SING,
             dwidth: QspiWidth::SING,
@@ -389,12 +372,11 @@ pub mod transfer {
         }
     }
 
-    pub fn _2dtrd(address: u32, len: usize, dummy: DummyCycles) -> TransferConfig {
+    pub fn _2dtrd(address: u32, dummy: DummyCycles) -> TransferConfig {
         TransferConfig {
             instruction: instruction::_2DTRD,
             address: Some(address),
             dummy,
-            data_len: Some(len),
             iwidth: Mode::SPI.into(),
             awidth: QspiWidth::DUAL,
             dwidth: QspiWidth::DUAL,
@@ -402,17 +384,11 @@ pub mod transfer {
         }
     }
 
-    pub fn _4dtrd(
-        mode: Mode,
-        address: u32,
-        len: usize,
-        dummy: DummyCycles,
-    ) -> TransferConfig {
+    pub fn _4dtrd(mode: Mode, address: u32, dummy: DummyCycles) -> TransferConfig {
         TransferConfig {
             instruction: instruction::_4DTRD,
             address: Some(address),
             dummy,
-            data_len: Some(len),
             iwidth: mode.into(),
             awidth: QspiWidth::QUAD,
             dwidth: QspiWidth::QUAD,
@@ -423,7 +399,6 @@ pub mod transfer {
     pub fn rdfbr() -> TransferConfig {
         TransferConfig {
             instruction: instruction::RDFBR,
-            data_len: Some(4),
             iwidth: Mode::SPI.into(),
             dwidth: Mode::SPI.into(),
             ..Default::default()
@@ -433,7 +408,6 @@ pub mod transfer {
     pub fn wrfbr() -> TransferConfig {
         TransferConfig {
             instruction: instruction::WRFBR,
-            data_len: Some(4),
             iwidth: Mode::SPI.into(),
             dwidth: Mode::SPI.into(),
             ..Default::default()
@@ -486,11 +460,10 @@ pub mod transfer {
         }
     }
 
-    pub fn pp(mode: Mode, address: u32, len: usize) -> TransferConfig {
+    pub fn pp(mode: Mode, address: u32) -> TransferConfig {
         TransferConfig {
             instruction: instruction::BE,
             address: Some(address),
-            data_len: Some(len),
             iwidth: mode.into(),
             awidth: mode.into(),
             dwidth: mode.into(),
@@ -498,11 +471,10 @@ pub mod transfer {
         }
     }
 
-    pub fn _4pp(address: u32, len: usize) -> TransferConfig {
+    pub fn _4pp(address: u32) -> TransferConfig {
         TransferConfig {
             instruction: instruction::_4PP,
             address: Some(address),
-            data_len: Some(len),
             iwidth: Mode::SPI.into(),
             awidth: QspiWidth::QUAD,
             dwidth: QspiWidth::QUAD,
@@ -537,7 +509,6 @@ pub mod transfer {
     pub fn rdscur(mode: Mode) -> TransferConfig {
         TransferConfig {
             instruction: instruction::RDSCUR,
-            data_len: Some(1),
             iwidth: mode.into(),
             dwidth: mode.into(),
             ..Default::default()
@@ -555,7 +526,6 @@ pub mod transfer {
     pub fn rdlr() -> TransferConfig {
         TransferConfig {
             instruction: instruction::RDLR,
-            data_len: Some(2),
             iwidth: Mode::SPI.into(),
             dwidth: Mode::SPI.into(),
             ..Default::default()
@@ -565,7 +535,6 @@ pub mod transfer {
     pub fn wrlr() -> TransferConfig {
         TransferConfig {
             instruction: instruction::WRLR,
-            data_len: Some(2),
             iwidth: Mode::SPI.into(),
             dwidth: Mode::SPI.into(),
             ..Default::default()
@@ -583,7 +552,6 @@ pub mod transfer {
     pub fn rdspblk() -> TransferConfig {
         TransferConfig {
             instruction: instruction::RDSPBLK,
-            data_len: Some(1),
             iwidth: Mode::SPI.into(),
             dwidth: Mode::SPI.into(),
             ..Default::default()
@@ -594,7 +562,6 @@ pub mod transfer {
         TransferConfig {
             instruction: instruction::RDSPB,
             address: Some(address),
-            data_len: Some(1),
             iwidth: Mode::SPI.into(),
             awidth: Mode::SPI.into(),
             dwidth: Mode::SPI.into(),
@@ -624,7 +591,6 @@ pub mod transfer {
         TransferConfig {
             instruction: instruction::RDDPB,
             address: Some(address),
-            data_len: Some(1),
             iwidth: Mode::SPI.into(),
             awidth: Mode::SPI.into(),
             dwidth: Mode::SPI.into(),
@@ -636,7 +602,6 @@ pub mod transfer {
         TransferConfig {
             instruction: instruction::WRSPB,
             address: Some(address),
-            data_len: Some(1),
             iwidth: Mode::SPI.into(),
             awidth: Mode::SPI.into(),
             dwidth: Mode::SPI.into(),
@@ -663,7 +628,6 @@ pub mod transfer {
     pub fn wrpass() -> TransferConfig {
         TransferConfig {
             instruction: instruction::WRPASS,
-            data_len: Some(8),
             iwidth: Mode::SPI.into(),
             dwidth: Mode::SPI.into(),
             ..Default::default()
@@ -673,7 +637,6 @@ pub mod transfer {
     pub fn rdpass() -> TransferConfig {
         TransferConfig {
             instruction: instruction::RDPASS,
-            data_len: Some(8),
             iwidth: Mode::SPI.into(),
             dwidth: Mode::SPI.into(),
             ..Default::default()
@@ -683,7 +646,6 @@ pub mod transfer {
     pub fn passulk() -> TransferConfig {
         TransferConfig {
             instruction: instruction::PASSULK,
-            data_len: Some(8),
             iwidth: Mode::SPI.into(),
             dwidth: Mode::SPI.into(),
             ..Default::default()
