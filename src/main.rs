@@ -12,7 +12,6 @@ use core::str::FromStr;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::yield_now;
-use embassy_net::Stack;
 use embassy_stm32::eth::PacketQueue;
 use embassy_stm32::{bind_interrupts, gpio, Peripheral};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
@@ -23,7 +22,7 @@ use heapless::String;
 #[allow(unused_imports)]
 use panic_halt as _;
 use rand_core::RngCore;
-use static_cell::{ConstStaticCell, StaticCell};
+use static_cell::ConstStaticCell;
 
 const HOSTNAME: &str = "STM32F7-DISCO";
 // first octet: locally administered (administratively assigned) unicast address;
@@ -42,8 +41,9 @@ type Device = embassy_stm32::eth::Ethernet<
 >;
 
 #[embassy_executor::task]
-async fn net_task(stack: &'static Stack<Device>) -> ! {
-    stack.run().await
+async fn net_task(runner: embassy_net::Runner<'static, Device>) -> ! {
+    let mut runner = runner;
+    runner.run().await
 }
 
 #[embassy_executor::main]
@@ -150,10 +150,9 @@ async fn echo(
     let mut server_rx_buf = [0; 4096];
     let mut server_tx_buf = [0; 4096];
 
-    static STACK: StaticCell<Stack<Device>> = StaticCell::new();
-    let stack = STACK.init(Stack::new(ethernet, net_cfg, resources, seeds[0]));
+    let (stack, runner) = embassy_net::new(ethernet, net_cfg, resources, seeds[0]);
 
-    spawner.must_spawn(net_task(stack));
+    spawner.must_spawn(net_task(runner));
     stack.wait_config_up().await;
 
     let config = loop {
@@ -212,16 +211,21 @@ fn config() -> embassy_stm32::Config {
     let mut config = embassy_stm32::Config::default();
     config.rcc = {
         let mut rcc = Config::default();
+        // HSI == 16 MHz
         rcc.hsi = true;
         rcc.pll = Some(Pll {
+            // PLL in == 16 MHz / 8 == 2 MHz
             prediv: PllPreDiv::DIV8,
+            // PLL out == 2 MHz * 64 == 128 MHz
             mul: PllMul(64),
+            // SYSCLK == PLL out / divp == 128 MHz / 2 == 64 MHz
             divp: Some(PllPDiv::DIV2),
             divq: None,
             divr: None,
         });
         rcc.pll_src = PllSource::HSI;
         rcc.sys = Sysclk::PLL1_P;
+        // APB1 clock must not be faster than 54 MHz
         rcc.apb1_pre = APBPrescaler::DIV2;
         rcc
     };

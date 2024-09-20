@@ -1,16 +1,16 @@
+use core::range::RangeInclusive;
+use core::slice;
+
 use bitflags::bitflags;
 use embassy_stm32::mode::Async;
 use embassy_stm32::qspi::enums::QspiWidth;
-use embassy_stm32::qspi::{Instance, Qspi};
+use embassy_stm32::qspi::{self, Qspi};
+use embassy_stm32::{gpio, Peripheral};
+use embassy_time::{Duration, Timer};
 
-pub struct Device<'d, T: embassy_stm32::qspi::Instance> {
-    size: u32,
-    state: State,
+pub struct Device<'d, T: qspi::Instance> {
+    size: qspi::enums::MemorySize,
     spi: Qspi<'d, T, Async>,
-}
-
-enum State {
-    Uninit,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -19,42 +19,288 @@ pub enum Mode {
     QPI,
 }
 
-impl<'d, T: Instance> Device<'d, T> {
-    async fn init(&mut self) {}
+pub struct ExtendedPins<NWP: gpio::Pin, NRESET: gpio::Pin> {
+    pub nwp: NWP,
+    pub nreset: NRESET,
+}
+
+impl<'d, T: qspi::Instance> Device<'d, T> {
+    const CS_HIGH_TIME: Duration = Duration::from_nanos(30);
+    const MAX_FREQ: Duration = Duration::from_hz(66_000_000);
+
+    pub const fn size(&self) -> qspi::enums::MemorySize {
+        self.size
+    }
+
+    pub fn size_in_bytes(&self) -> u32 {
+        1 << u8::from(self.size()) << 1
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new(
+        size: qspi::enums::MemorySize,
+        ahb_freq: Duration,
+        prescaler: u8,
+        spi: impl Peripheral<P = T> + 'd,
+        d0: impl Peripheral<P = impl qspi::BK1D0Pin<T>> + 'd,
+        d1: impl Peripheral<P = impl qspi::BK1D1Pin<T>> + 'd,
+        d2: impl Peripheral<P = impl qspi::BK1D2Pin<T>> + 'd,
+        d3: impl Peripheral<P = impl qspi::BK1D3Pin<T>> + 'd,
+        sck: impl Peripheral<P = impl qspi::SckPin<T>> + 'd,
+        ncs: impl Peripheral<P = impl qspi::BK1NSSPin<T>> + 'd,
+        dma: impl Peripheral<P = impl qspi::QuadDma<T>> + 'd,
+        extended: Option<ExtendedPins<impl gpio::Pin, impl gpio::Pin>>,
+    ) -> Self {
+        let spi_freq = Duration::from_ticks(prescaler as u64 * ahb_freq.as_ticks());
+        assert!(spi_freq < Self::MAX_FREQ);
+
+        let mut d3 = d3;
+        let mut ncs = ncs;
+        let mut extended = extended;
+
+        let mut ncs_out =
+            gpio::Output::new(&mut ncs, gpio::Level::High, gpio::Speed::VeryHigh);
+        if let Some(pins) = &mut extended {
+            reset(&mut ncs_out, Peripheral::into_ref(&mut pins.nreset)).await;
+        } else {
+            reset(&mut ncs_out, Peripheral::into_ref(&mut d3)).await;
+        }
+        drop(ncs_out);
+
+        let address_bits = u8::from(size) + 1;
+        let address_size = match address_bits.div_ceil(8) {
+            | 1..=3 => qspi::enums::AddressSize::_24bit,
+            | 4 => qspi::enums::AddressSize::_32bit,
+            | _ => panic!("memory of size {} is unaddressable", address_bits),
+        };
+
+        let spi_cfg = qspi::Config {
+            memory_size: size,
+            address_size,
+            prescaler,
+            fifo_threshold: qspi::enums::FIFOThresholdLevel::_32Bytes,
+            cs_high_time: match Self::CS_HIGH_TIME
+                .as_ticks()
+                .div_ceil(spi_freq.as_ticks())
+            {
+                | 1 => qspi::enums::ChipSelectHighTime::_1Cycle,
+                | 2 => qspi::enums::ChipSelectHighTime::_2Cycle,
+                | 3 => qspi::enums::ChipSelectHighTime::_3Cycle,
+                | 4 => qspi::enums::ChipSelectHighTime::_4Cycle,
+                | 5 => qspi::enums::ChipSelectHighTime::_5Cycle,
+                | 6 => qspi::enums::ChipSelectHighTime::_6Cycle,
+                | 7 => qspi::enums::ChipSelectHighTime::_7Cycle,
+                | 8 => qspi::enums::ChipSelectHighTime::_8Cycle,
+                | _ => panic!("spi frequency too high"),
+            },
+        };
+
+        let mut spi = qspi::Qspi::new_bank1(spi, d0, d1, d2, d3, sck, ncs, dma, spi_cfg);
+
+        spi.write_dma(&[], transfer::wren(Mode::SPI)).await;
+        spi.write_dma(&[bytemuck::cast(SR::QE)], transfer::wrsr(Mode::SPI)).await;
+        if matches!(address_size, qspi::enums::AddressSize::_32bit) {
+            spi.write_dma(&[], transfer::en4b(Mode::QPI)).await;
+        }
+
+        Self::wait_write_done(&mut spi, Duration::from_micros(10)).await;
+
+        Self { size, spi }
+    }
+
+    /// Read some data from flash.
+    ///
+    /// Wraps on address or flash size overflow.
+    pub async fn read(&mut self, data: &mut [u8], address: u32) {
+        self.spi
+            .read_dma(data, transfer::qread(address, qspi::enums::DummyCycles::_8))
+            .await
+    }
+
+    /// Write some data to flash. Cannot Program 0s back to 1s.
+    ///
+    /// Wraps on address or flash size overflow.
+    pub async fn program(&mut self, data: &[u8], address: u32) {
+        let chunk_size = 256;
+        let mut offset = address;
+        for section in data.chunks(chunk_size as usize) {
+            self.spi.write_dma(&[], transfer::wren(Mode::QPI)).await;
+            self.spi.write_dma(section, transfer::pp(Mode::QPI, address)).await;
+
+            offset = offset.overflowing_add(chunk_size).0;
+
+            Self::wait_write_done(&mut self.spi, Duration::from_micros(10)).await;
+        }
+    }
+
+    /// Erase some data from flash, i.e., change 0s back to 1s.
+    ///
+    /// Wraps on address or flash size overflow.
+    ///
+    /// Erases aligned 4, 32 or 64-KiB blocks.
+    /// The actually erased range is fitted as closely as possible
+    /// around the requested range and will always contain it entirely.
+    /// Wraps on address or flash size overflow.
+    pub async fn erase(&mut self, range: RangeInclusive<u32>) {
+        const ALIGN_4K: u32 = 4 << 10;
+        const ALIGN_32K: u32 = 32 << 10;
+        const ALIGN_64K: u32 = 64 << 10;
+
+        fn waste(pick: RangeInclusive<u32>, target: RangeInclusive<u32>) -> u32 {
+            if pick.is_empty()
+                || target.contains(&pick.start) && target.contains(&pick.end)
+            {
+                0
+            } else if target.contains(&pick.end) {
+                target.start - pick.start
+            } else if target.contains(&pick.start) {
+                pick.end - target.end
+            } else {
+                (pick.end - pick.start).saturating_add(1)
+            }
+        }
+
+        fn best_fit(addr: u32, target: RangeInclusive<u32>) -> u32 {
+            [ALIGN_4K, ALIGN_32K, ALIGN_64K]
+                .map(|a| (a, align_down(addr, a)..=align_up(addr, a).0.wrapping_sub(1)))
+                .map(|(a, pick)| (a, RangeInclusive::from(pick)))
+                .map(|(a, pick)| (a, waste(pick, target)))
+                .into_iter()
+                .min_by_key(|(_, waste)| *waste)
+                .expect("array is nonempty")
+                .0
+        }
+
+        let mut wrapped = false;
+        let mut address = range.start;
+
+        while range.contains(&address) && !wrapped {
+            self.spi.write_dma(&[], transfer::wren(Mode::QPI)).await;
+            let align = best_fit(address + 1, range);
+            let (transfer, t_ms) = match align {
+                | ALIGN_4K => (transfer::se(Mode::QPI, address), 20),
+                | ALIGN_32K => (transfer::be32k(Mode::QPI, address), 100),
+                | ALIGN_64K => (transfer::be(Mode::QPI, address), 200),
+                | _ => unreachable!(),
+            };
+            self.spi.write_dma(&[], transfer).await;
+            Self::wait_write_done(&mut self.spi, Duration::from_millis(t_ms)).await;
+
+            (address, wrapped) = align_up(address, align);
+        }
+    }
+
+    /// Erase all data from flash, i.e., change all 0s back to 1s.
+    pub async fn erase_chip(&mut self) {
+        self.spi.write_dma(&[], transfer::wren(Mode::QPI)).await;
+
+        self.spi.write_dma(&[], transfer::ce(Mode::QPI)).await;
+        Self::wait_write_done(&mut self.spi, Duration::from_secs(100)).await;
+    }
+
+    async fn wait_write_done(spi: &mut Qspi<'d, T, Async>, delay: Duration) {
+        let mut sr = SR::WIP;
+        loop {
+            spi.read_dma(
+                slice::from_mut(bytemuck::cast_mut(&mut sr)),
+                transfer::rdsr(Mode::QPI),
+            )
+            .await;
+            if !sr.contains(SR::WIP) {
+                break;
+            }
+            Timer::after(delay).await;
+        }
+    }
+}
+
+/// Returns the aligned address alongside a `bool` indicating whether the result is wrapped.
+///
+/// `alignment` must be a power of two
+pub const fn align_up(address: u32, alignment: u32) -> (u32, bool) {
+    assert!(alignment.is_power_of_two());
+    if is_aligned_to(address, alignment) {
+        (address, false)
+    } else {
+        (address & !(alignment - 1)).overflowing_add(alignment)
+    }
+}
+
+/// `alignment` must be a power of two
+pub const fn align_down(address: u32, alignment: u32) -> u32 {
+    assert!(alignment.is_power_of_two());
+    address & !(alignment - 1)
+}
+
+/// `alignment` must be a power of two
+pub const fn is_aligned_to(address: u32, alignment: u32) -> bool {
+    assert!(alignment.is_power_of_two());
+    address & (alignment - 1) == 0
+}
+
+async fn reset<'d>(
+    ncs: &mut gpio::Output<'d>,
+    nreset: impl Peripheral<P = impl gpio::Pin> + 'd,
+) {
+    ncs.set_high();
+    let mut nreset = gpio::Output::new(nreset, gpio::Level::Low, gpio::Speed::Medium);
+    Timer::after_micros(20).await;
+    nreset.set_high();
+    Timer::after_micros(20).await;
 }
 
 bitflags! {
+    #[repr(transparent)]
     #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+    #[derive(bytemuck::Pod, bytemuck::Zeroable)]
+    /// status register
     pub struct SR: u8 {
+        /// program/erase/write in progress
         const WIP  = 1 << 0;
+        /// write enabl
         const WEL  = 1 << 1;
         const BP0  = 1 << 2;
         const BP1  = 1 << 3;
         const BP2  = 1 << 4;
         const BP3  = 1 << 5;
+        /// quad enabl
         const QE   = 1 << 6;
+        /// status register write disabl
         const SRWD = 1 << 7;
         const _    = !0;
     }
 }
 
 bitflags! {
+    #[repr(transparent)]
     #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+    #[derive(bytemuck::Pod, bytemuck::Zeroable)]
+    /// configuration register
     pub struct CR: u8 {
+        /// output driver strength
         const ODS0    = 1 << 0;
+        /// output driver strength
         const ODS1    = 1 << 1;
+        /// output driver strength
         const ODS2    = 1 << 2;
+        /// bottom area protect
         const TB      = 1 << 3;
+        /// preamble bit enable
         const PBE     = 1 << 4;
+        // 4-byte address mode
         const _4_BYTE = 1 << 5;
+        /// dummy cycle 0
         const DC0     = 1 << 6;
+        /// dummy cycle 1
         const DC1     = 1 << 7;
         const _       = !0;
     }
 }
 
 bitflags! {
+    #[repr(transparent)]
     #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+    #[derive(bytemuck::Pod, bytemuck::Zeroable)]
     pub struct SCUR: u8 {
         const OTP    = 1 << 0;
         const LDSO   = 1 << 1;
