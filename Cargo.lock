@@ -285,6 +285,7 @@ dependencies = [
  "smoltcp",
  "sntpc",
  "static_cell",
+ "stm32-fmc",
  "tap",
 ]
 

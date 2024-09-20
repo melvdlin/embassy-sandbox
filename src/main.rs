@@ -3,11 +3,13 @@
 #![feature(impl_trait_in_assoc_type)]
 #![feature(async_closure)]
 #![feature(core_intrinsics)]
+#![feature(layout_for_ptr)]
 #![allow(internal_features)]
 
 use core::fmt::Write as FmtWrite;
 #[allow(unused)]
 use core::intrinsics::breakpoint;
+use core::mem::MaybeUninit;
 use core::str::FromStr;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
@@ -16,13 +18,14 @@ use embassy_stm32::eth::PacketQueue;
 use embassy_stm32::{bind_interrupts, gpio, Peripheral};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Delay, Duration, Timer};
 use embedded_io_async::Write as AsyncWrite;
 use heapless::String;
 #[allow(unused_imports)]
 use panic_halt as _;
 use rand_core::RngCore;
-use static_cell::ConstStaticCell;
+use static_cell::{ConstStaticCell, StaticCell};
+use stm32_fmc::Sdram;
 
 const HOSTNAME: &str = "STM32F7-DISCO";
 // first octet: locally administered (administratively assigned) unicast address;
@@ -55,6 +58,98 @@ static DHCP_UP: Signal<ThreadModeRawMutex, ()> = Signal::new();
 
 async fn _main(spawner: Spawner) -> ! {
     let p = embassy_stm32::init(config());
+
+    static SDRAM: StaticCell<
+        Sdram<
+            embassy_stm32::fmc::Fmc<'static, embassy_stm32::peripherals::FMC>,
+            stm32_fmc::devices::is42s32400f_6::Is42s32400f6,
+        >,
+    > = StaticCell::new();
+    const SDRAM_SIZE: usize = (128 / 8) << 10;
+    let sdram = SDRAM.init(embassy_stm32::fmc::Fmc::sdram_a13bits_d32bits_4banks_bank1(
+        p.FMC,
+        p.PF0,
+        p.PF1,
+        p.PF2,
+        p.PF3,
+        p.PF4,
+        p.PF5,
+        p.PF12,
+        p.PF13,
+        p.PF14,
+        p.PF15,
+        p.PG0,
+        p.PG1,
+        p.PG2,
+        p.PG4,
+        p.PG5,
+        p.PD14,
+        p.PD15,
+        p.PD0,
+        p.PD1,
+        p.PE7,
+        p.PE8,
+        p.PE9,
+        p.PE10,
+        p.PE11,
+        p.PE12,
+        p.PE13,
+        p.PE14,
+        p.PE15,
+        p.PD8,
+        p.PD9,
+        p.PD10,
+        p.PH8,
+        p.PH9,
+        p.PH10,
+        p.PH11,
+        p.PH12,
+        p.PH13,
+        p.PH14,
+        p.PH15,
+        p.PI0,
+        p.PI1,
+        p.PI2,
+        p.PI3,
+        p.PI6,
+        p.PI7,
+        p.PI9,
+        p.PI10,
+        p.PE0,
+        p.PE1,
+        p.PI4,
+        p.PI5,
+        p.PH2,
+        p.PG8,
+        p.PG15,
+        p.PH3,
+        p.PF11,
+        p.PH5,
+        stm32_fmc::devices::is42s32400f_6::Is42s32400f6 {},
+    ));
+    let memory: &'static mut [MaybeUninit<u32>] = {
+        let ptr = sdram.init(&mut Delay);
+        let ptr = ptr.cast::<MaybeUninit<u32>>();
+        // Safety: pointee u32: Sized
+        let size = unsafe { core::mem::size_of_val_raw(ptr) };
+        let len = SDRAM_SIZE / size;
+        // Safety:
+        // - I sure hope `embassy_stm32::fmc::Fmc::sdram_a13bits_d32bits_4banks_bank1` returns a read/write valid pointer
+        // - the source ptr does not escape this scope
+        const _: () = assert!(SDRAM_SIZE <= isize::MAX as usize);
+        assert!((ptr as usize).checked_add(SDRAM_SIZE).is_some());
+        unsafe { core::slice::from_raw_parts_mut(ptr, len) }
+    };
+
+    let (head, tail) = memory.split_at_mut(4);
+    let values: &[u32] = &[0x12345678, 0x87654321, 0x89ABCDEF, 0xFEDCBA98];
+    for (src, dst) in values.iter().zip(head.iter_mut()) {
+        dst.write(*src);
+    }
+    let head =
+        unsafe { core::mem::transmute::<&mut [MaybeUninit<u32>], &mut [u32]>(head) };
+
+    assert_eq!(head, values);
 
     let ld1 = gpio::Output::new(p.PJ13, gpio::Level::High, gpio::Speed::Low);
     let ld2 = gpio::Output::new(p.PJ5, gpio::Level::High, gpio::Speed::Low);
