@@ -15,8 +15,10 @@ use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::yield_now;
 use embassy_stm32::eth::PacketQueue;
-use embassy_stm32::{bind_interrupts, gpio, Peripheral};
+use embassy_stm32::time::Hertz;
+use embassy_stm32::{bind_interrupts, gpio, qspi, Peripheral};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Delay, Duration, Timer};
 use embedded_io_async::Write as AsyncWrite;
@@ -57,7 +59,8 @@ async fn main(spawner: Spawner) -> ! {
 static DHCP_UP: Signal<ThreadModeRawMutex, ()> = Signal::new();
 
 async fn _main(spawner: Spawner) -> ! {
-    let p = embassy_stm32::init(config());
+    let (config, ahb_freq) = config();
+    let p = embassy_stm32::init(config);
 
     static SDRAM: StaticCell<
         Sdram<
@@ -150,6 +153,53 @@ async fn _main(spawner: Spawner) -> ! {
         unsafe { core::mem::transmute::<&mut [MaybeUninit<u32>], &mut [u32]>(head) };
 
     assert_eq!(head, values);
+
+    let mut flash = embassy_sandbox::flash::Device::new(
+        qspi::enums::MemorySize::_64MiB,
+        ahb_freq,
+        128,
+        p.QUADSPI,
+        p.PC9,
+        p.PC10,
+        p.PE2,
+        p.PD13,
+        p.PB2,
+        p.PB6,
+        p.DMA2_CH2,
+        None,
+    )
+    .await;
+
+    // let values = &[0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF];
+    // let buf = &mut [0; 8];
+    // flash.program(values, 0).await;
+    // flash.read(buf, 0).await;
+
+    // flash.erase_chip().await;
+    // flash.erase(4 << 10..=(4 << 10) + 16).await;
+
+    static BUF: Mutex<ThreadModeRawMutex, [u8; 0xFFFF]> =
+        Mutex::new([0b10100101; 0xFFFF]);
+    let mut buff = BUF.lock().await;
+    let small_buf = &mut [0; 16];
+
+    flash.erase((4 << 10)..=(4 << 10) + 1).await;
+
+    // let values = &[0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01];
+    // flash.program(values, 0).await;
+    flash.read(&mut *buff, 0).await;
+    flash.read(small_buf, buff.len() as u32).await;
+    let block1 = &buff[..16];
+    let block2 = &buff[(4 << 10) - 16..(4 << 10) + 16];
+    let block3 = &buff[(8 << 10) - 16..(8 << 10) + 16];
+    let block4 = &buff[(16 << 10) - 16..(16 << 10) + 16];
+    let block5 = &buff[(24 << 10) - 16..(24 << 10) + 16];
+    let block6 = &buff[(32 << 10) - 16..(32 << 10) + 16];
+    let block7 = &buff[(40 << 10) - 16..(40 << 10) + 16];
+    let block8 = &buff[(48 << 10) - 16..(48 << 10) + 16];
+    let block9 = &buff[(56 << 10) - 16..(56 << 10) + 16];
+    let block10 = &buff[(0xFFFF) - 16..];
+    // assert!(buff[..(4 << 10)].iter().all(|v| *v == 0));
 
     let ld1 = gpio::Output::new(p.PJ13, gpio::Level::High, gpio::Speed::Low);
     let ld2 = gpio::Output::new(p.PJ5, gpio::Level::High, gpio::Speed::Low);
@@ -301,7 +351,7 @@ async fn echo(
 }
 
 // noinspection ALL
-fn config() -> embassy_stm32::Config {
+fn config() -> (embassy_stm32::Config, Hertz) {
     use embassy_stm32::rcc::*;
     let mut config = embassy_stm32::Config::default();
     config.rcc = {
@@ -322,9 +372,11 @@ fn config() -> embassy_stm32::Config {
         rcc.sys = Sysclk::PLL1_P;
         // APB1 clock must not be faster than 54 MHz
         rcc.apb1_pre = APBPrescaler::DIV2;
+        // AHB clock == SYSCLK = 64MHz
+        rcc.ahb_pre = AHBPrescaler::DIV1;
         rcc
     };
-    config
+    (config, Hertz(64_000_000))
 }
 
 #[allow(unused)]
