@@ -1,29 +1,39 @@
 use core::cmp::max;
 
-use embassy_stm32::{gpio, qspi, Peripheral};
+use embassy_stm32::{
+    gpio,
+    qspi::{self, enums::AddressSize},
+    Peripheral,
+};
 use embassy_time::{block_for, Duration};
 use itertools::Itertools;
 
 #[derive(Debug)]
+#[derive(Default)]
 #[derive(Clone, Copy)]
 #[derive(PartialEq, Eq)]
 pub enum Cpol {
+    #[default]
     _0,
     _1,
 }
 
 #[derive(Debug)]
+#[derive(Default)]
 #[derive(Clone, Copy)]
 #[derive(PartialEq, Eq)]
 pub enum Cpha {
+    #[default]
     _0,
     _1,
 }
 
 #[derive(Debug)]
+#[derive(Default)]
 #[derive(Copy, Clone)]
 #[derive(Eq, PartialEq)]
 pub enum Mode {
+    #[default]
     Single,
     Quad,
 }
@@ -54,13 +64,17 @@ pub struct QuadSpi<'d> {
     d3_nhold: gpio::Flex<'d>,
 }
 
+#[derive(Default)]
+#[derive(Clone, Copy)]
 pub struct QuadTransfer {
-    instruction: Option<(u8, Mode)>,
-    address: Option<(u32, Mode, qspi::enums::AddressSize)>,
-    data: Option<Mode>,
-    dummy_cycles: usize,
+    pub instruction: Option<(u8, Mode)>,
+    pub address: Option<(u32, Mode, qspi::enums::AddressSize)>,
+    pub data: Option<Mode>,
+    pub dummy_cycles: usize,
 }
 
+#[derive(Debug)]
+#[derive(Eq, PartialEq)]
 enum Direction<'a> {
     Read(&'a mut [u8]),
     Write(&'a [u8]),
@@ -159,12 +173,13 @@ impl<'d> QuadSpi<'d> {
         self.quad_transfer(Direction::Read(data), transfer);
     }
 
-    pub fn quad_write(&mut self, data: &mut [u8], transfer: &QuadTransfer) {
+    pub fn quad_write(&mut self, data: &[u8], transfer: &QuadTransfer) {
         self.quad_transfer(Direction::Write(data), transfer);
     }
 
     fn quad_transfer(&mut self, direction: Direction, transfer: &QuadTransfer) {
         self.single_mode();
+        self.ncs.set_low();
 
         if self.cpha == Cpha::_1 {
             block_for(self.min_sck_half_cycle);
@@ -359,6 +374,7 @@ impl<'d> QuadSpi<'d> {
 
             block_for(self.min_sck_half_cycle);
             self.sck.toggle();
+            block_for(self.min_sck_half_cycle);
 
             for (shift, pin) in [
                 &mut self.d0_mosi,
@@ -372,8 +388,6 @@ impl<'d> QuadSpi<'d> {
                 rx |= (pin.is_high() as u8) << shift;
             }
             rx <<= 4 * half;
-
-            block_for(self.min_sck_half_cycle);
 
             if self.cpha == Cpha::_0 {
                 self.sck.toggle();
@@ -469,6 +483,35 @@ impl Cpol {
         match self {
             | Cpol::_0 => gpio::Level::Low,
             | Cpol::_1 => gpio::Level::High,
+        }
+    }
+}
+
+impl Mode {
+    pub fn from_width(width: embassy_stm32::qspi::enums::QspiWidth) -> Option<Self> {
+        match width {
+            | qspi::enums::QspiWidth::NONE => None,
+            | qspi::enums::QspiWidth::SING => Some(Self::Single),
+            | qspi::enums::QspiWidth::DUAL => panic!("dual SPI unsupported"),
+            | qspi::enums::QspiWidth::QUAD => Some(Self::Quad),
+        }
+    }
+}
+
+impl QuadTransfer {
+    pub fn from_config(
+        transfer: embassy_stm32::qspi::TransferConfig,
+        address_size: AddressSize,
+    ) -> Self {
+        Self {
+            instruction: Mode::from_width(transfer.iwidth)
+                .map(|mode| (transfer.instruction, mode)),
+            address: transfer.address.and_then(|address| {
+                Mode::from_width(transfer.awidth)
+                    .map(|mode| (address, mode, address_size))
+            }),
+            data: Mode::from_width(transfer.dwidth),
+            dummy_cycles: u8::from(transfer.dummy).into(),
         }
     }
 }
