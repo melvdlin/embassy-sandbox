@@ -121,12 +121,31 @@ impl<'d> QuadSpi<'d> {
 
     pub fn single_transfer(&mut self, tx: &[u8], rx: &mut [u8]) {
         self.single_mode();
+        self.ncs.set_low();
 
         if self.cpha == Cpha::_1 {
             block_for(self.min_sck_half_cycle);
         }
 
         self.single_transmit_(tx, rx);
+
+        if self.cpha == Cpha::_0 {
+            block_for(self.min_sck_half_cycle);
+        }
+
+        self.ncs.set_high();
+        block_for(self.cs_high_time);
+    }
+
+    pub fn single_transfer_in_place(&mut self, trx: &mut [u8]) {
+        self.single_mode();
+        self.ncs.set_low();
+
+        if self.cpha == Cpha::_1 {
+            block_for(self.min_sck_half_cycle);
+        }
+
+        self.single_transmit_in_place_(trx);
 
         if self.cpha == Cpha::_0 {
             block_for(self.min_sck_half_cycle);
@@ -242,9 +261,15 @@ impl<'d> QuadSpi<'d> {
 
     fn single_transmit_(&mut self, tx: &[u8], rx: &mut [u8]) {
         let discard = &mut 0;
-        for x in tx.iter().copied().zip_longest(rx.iter_mut()) {
-            let (tx, rx) = x.or(0, discard);
+        for trx in tx.iter().copied().zip_longest(rx.iter_mut()) {
+            let (tx, rx) = trx.or(0, discard);
             *rx = self.single_transmit_byte_(tx);
+        }
+    }
+
+    fn single_transmit_in_place_(&mut self, trx: &mut [u8]) {
+        for trx in trx {
+            *trx = self.single_transmit_byte_(*trx);
         }
     }
 
