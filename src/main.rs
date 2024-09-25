@@ -16,7 +16,7 @@ use embassy_futures::join::join;
 use embassy_futures::yield_now;
 use embassy_stm32::eth::PacketQueue;
 use embassy_stm32::time::Hertz;
-use embassy_stm32::{bind_interrupts, gpio, qspi, Peripheral};
+use embassy_stm32::{bind_interrupts, exti, gpio, qspi, Peripheral};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
@@ -61,76 +61,80 @@ static DHCP_UP: Signal<ThreadModeRawMutex, ()> = Signal::new();
 async fn _main(spawner: Spawner) -> ! {
     let (config, ahb_freq) = config();
     let p = embassy_stm32::init(config);
+    let mut button =
+        embassy_stm32::exti::ExtiInput::new(p.PA0, p.EXTI0, gpio::Pull::Down);
 
-    static SDRAM: StaticCell<
-        Sdram<
-            embassy_stm32::fmc::Fmc<'static, embassy_stm32::peripherals::FMC>,
-            stm32_fmc::devices::is42s32400f_6::Is42s32400f6,
-        >,
-    > = StaticCell::new();
-    const SDRAM_SIZE: usize = (128 / 8) << 10;
-    let sdram = SDRAM.init(embassy_stm32::fmc::Fmc::sdram_a13bits_d32bits_4banks_bank1(
-        p.FMC,
-        p.PF0,
-        p.PF1,
-        p.PF2,
-        p.PF3,
-        p.PF4,
-        p.PF5,
-        p.PF12,
-        p.PF13,
-        p.PF14,
-        p.PF15,
-        p.PG0,
-        p.PG1,
-        p.PG2,
-        p.PG4,
-        p.PG5,
-        p.PD14,
-        p.PD15,
-        p.PD0,
-        p.PD1,
-        p.PE7,
-        p.PE8,
-        p.PE9,
-        p.PE10,
-        p.PE11,
-        p.PE12,
-        p.PE13,
-        p.PE14,
-        p.PE15,
-        p.PD8,
-        p.PD9,
-        p.PD10,
-        p.PH8,
-        p.PH9,
-        p.PH10,
-        p.PH11,
-        p.PH12,
-        p.PH13,
-        p.PH14,
-        p.PH15,
-        p.PI0,
-        p.PI1,
-        p.PI2,
-        p.PI3,
-        p.PI6,
-        p.PI7,
-        p.PI9,
-        p.PI10,
-        p.PE0,
-        p.PE1,
-        p.PI4,
-        p.PI5,
-        p.PH2,
-        p.PG8,
-        p.PG15,
-        p.PH3,
-        p.PF11,
-        p.PH5,
-        stm32_fmc::devices::is42s32400f_6::Is42s32400f6 {},
-    ));
+    /* SDRAM
     let memory: &'static mut [MaybeUninit<u32>] = {
+        static SDRAM: StaticCell<
+            Sdram<
+                embassy_stm32::fmc::Fmc<'static, embassy_stm32::peripherals::FMC>,
+                stm32_fmc::devices::is42s32400f_6::Is42s32400f6,
+            >,
+        > = StaticCell::new();
+        const SDRAM_SIZE: usize = (128 / 8) << 10;
+        let sdram =
+            SDRAM.init(embassy_stm32::fmc::Fmc::sdram_a13bits_d32bits_4banks_bank1(
+                p.FMC,
+                p.PF0,
+                p.PF1,
+                p.PF2,
+                p.PF3,
+                p.PF4,
+                p.PF5,
+                p.PF12,
+                p.PF13,
+                p.PF14,
+                p.PF15,
+                p.PG0,
+                p.PG1,
+                p.PG2,
+                p.PG4,
+                p.PG5,
+                p.PD14,
+                p.PD15,
+                p.PD0,
+                p.PD1,
+                p.PE7,
+                p.PE8,
+                p.PE9,
+                p.PE10,
+                p.PE11,
+                p.PE12,
+                p.PE13,
+                p.PE14,
+                p.PE15,
+                p.PD8,
+                p.PD9,
+                p.PD10,
+                p.PH8,
+                p.PH9,
+                p.PH10,
+                p.PH11,
+                p.PH12,
+                p.PH13,
+                p.PH14,
+                p.PH15,
+                p.PI0,
+                p.PI1,
+                p.PI2,
+                p.PI3,
+                p.PI6,
+                p.PI7,
+                p.PI9,
+                p.PI10,
+                p.PE0,
+                p.PE1,
+                p.PI4,
+                p.PI5,
+                p.PH2,
+                p.PG8,
+                p.PG15,
+                p.PH3,
+                p.PF11,
+                p.PH5,
+                stm32_fmc::devices::is42s32400f_6::Is42s32400f6 {},
+            ));
         let ptr = sdram.init(&mut Delay);
         let ptr = ptr.cast::<MaybeUninit<u32>>();
         // Safety: pointee u32: Sized
@@ -153,37 +157,56 @@ async fn _main(spawner: Spawner) -> ! {
         unsafe { core::mem::transmute::<&mut [MaybeUninit<u32>], &mut [u32]>(head) };
 
     assert_eq!(head, values);
+    */
+
+    let proceed = core::sync::atomic::AtomicBool::new(false);
+    while !proceed.load(core::sync::atomic::Ordering::SeqCst) {
+        button.wait_for_falling_edge().await;
+    }
 
     let mut flash = embassy_sandbox::flash::Device::new(
         qspi::enums::MemorySize::_64MiB,
         ahb_freq,
         128,
         p.QUADSPI,
+        // d0
+        // p.PC7,
         p.PC9,
+        // d1
+        // p.PC6,
         p.PC10,
+        // d2
+        // p.PJ1,
         p.PE2,
+        // d3
+        // p.PF6,
         p.PD13,
+        // sck
+        // p.PJ0,
         p.PB2,
+        // ncs
+        // p.PC8,
         p.PB6,
         p.DMA2_CH2,
         None,
     )
     .await;
 
-    // let values = &[0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF];
-    // let buf = &mut [0; 8];
-    // flash.program(values, 0).await;
-    // flash.read(buf, 0).await;
-
     // flash.erase_chip().await;
     // flash.erase(4 << 10..=(4 << 10) + 16).await;
+
+    let values = &mut [0; 256];
+    for (i, v) in values.iter_mut().enumerate() {
+        *v = i as u8;
+    }
+    flash.program(&*values, 32).await;
 
     static BUF: Mutex<ThreadModeRawMutex, [u8; 0xFFFF]> =
         Mutex::new([0b10100101; 0xFFFF]);
     let mut buff = BUF.lock().await;
     let small_buf = &mut [0; 16];
 
-    flash.erase((4 << 10)..=(4 << 10) + 1).await;
+    // flash.erase(0..=0).await;
 
     // let values = &[0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01];
     // flash.program(values, 0).await;
@@ -201,6 +224,9 @@ async fn _main(spawner: Spawner) -> ! {
     let block10 = &buff[(0xFFFF) - 16..];
     // assert!(buff[..(4 << 10)].iter().all(|v| *v == 0));
 
+    loop {}
+
+    /*
     let ld1 = gpio::Output::new(p.PJ13, gpio::Level::High, gpio::Speed::Low);
     let ld2 = gpio::Output::new(p.PJ5, gpio::Level::High, gpio::Speed::Low);
 
@@ -214,6 +240,7 @@ async fn _main(spawner: Spawner) -> ! {
     );
 
     join(blink, echo).await.0
+    */
 }
 
 async fn blink(ld1: gpio::Output<'_>, ld2: gpio::Output<'_>) -> ! {

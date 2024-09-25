@@ -1,27 +1,33 @@
+use core::cell::{SyncUnsafeCell, UnsafeCell};
 use core::mem::forget;
 use core::range::RangeInclusive;
 use core::slice;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use bitflags::bitflags;
+use embassy_futures::block_on;
 use embassy_stm32::mode::Async;
-use embassy_stm32::qspi::enums::QspiWidth;
-use embassy_stm32::qspi::{self, Qspi};
+use embassy_stm32::qspi::enums::{AddressSize, QspiWidth};
+use embassy_stm32::qspi::{self, Qspi, TransferConfig};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::{gpio, Peripheral};
+use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_time::{Duration, Timer};
 use num_traits::float::FloatCore;
 
-use crate::bitbang;
+use crate::bitbang::{self, QuadTransfer};
 
 pub struct Device<'d, T: qspi::Instance> {
     size: qspi::enums::MemorySize,
     spi: Qspi<'d, T, Async>,
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug)]
+#[derive(Copy, Clone)]
+#[derive(Eq, PartialEq)]
 pub enum Mode {
-    SPI,
-    QPI,
+    Single,
+    Quad,
 }
 
 pub struct ExtendedPins<NWP: gpio::Pin, NRESET: gpio::Pin> {
@@ -47,12 +53,12 @@ impl<'d, T: qspi::Instance> Device<'d, T> {
         ahb_freq: Hertz,
         prescaler: u8,
         spi: impl Peripheral<P = T> + 'd,
-        d0: impl Peripheral<P = impl qspi::BK1D0Pin<T>> + 'd,
-        d1: impl Peripheral<P = impl qspi::BK1D1Pin<T>> + 'd,
-        d2: impl Peripheral<P = impl qspi::BK1D2Pin<T>> + 'd,
-        d3: impl Peripheral<P = impl qspi::BK1D3Pin<T>> + 'd,
-        sck: impl Peripheral<P = impl qspi::SckPin<T>> + 'd,
-        ncs: impl Peripheral<P = impl qspi::BK1NSSPin<T>> + 'd,
+        d0: impl Peripheral<P = impl gpio::Pin /* qspi::BK1D0Pin<T> */> + 'd,
+        d1: impl Peripheral<P = impl gpio::Pin /* qspi::BK1D1Pin<T> */> + 'd,
+        d2: impl Peripheral<P = impl gpio::Pin /* qspi::BK1D2Pin<T> */> + 'd,
+        d3: impl Peripheral<P = impl gpio::Pin /* qspi::BK1D3Pin<T> */> + 'd,
+        sck: impl Peripheral<P = impl gpio::Pin /* qspi::SckPin<T> */> + 'd,
+        ncs: impl Peripheral<P = impl gpio::Pin /* qspi::BK1NSSPin<T> */> + 'd,
         dma: impl Peripheral<P = impl qspi::QuadDma<T>> + 'd,
         extended: Option<ExtendedPins<gpio::AnyPin, gpio::AnyPin>>,
     ) -> Self {
@@ -67,21 +73,32 @@ impl<'d, T: qspi::Instance> Device<'d, T> {
         let mut ncs = ncs;
         let mut extended = extended;
 
-        let nwp = if let Some(pins) = &mut extended {
-            gpio::Output::new(&mut pins.nwp, gpio::Level::High, gpio::Speed::VeryHigh)
-        } else {
-            gpio::Output::new(&mut d2, gpio::Level::High, gpio::Speed::VeryHigh)
-        };
-        forget(nwp);
+        // let nwp = if let Some(pins) = &mut extended {
+        //     gpio::Output::new(&mut pins.nwp, gpio::Level::High, gpio::Speed::VeryHigh)
+        // } else {
+        //     gpio::Output::new(&mut d2, gpio::Level::High, gpio::Speed::VeryHigh)
+        // };
+        // forget(nwp);
 
-        if let Some(pins) = &mut extended {
-            reset(&mut ncs, &mut pins.nreset).await;
-        } else {
-            reset(&mut ncs, &mut d3).await;
-        }
+        // if let Some(pins) = &mut extended {
+        //     reset(&mut ncs, &mut pins.nreset).await;
+        // } else {
+        //     reset(&mut ncs, &mut d3).await;
+        // }
 
-        let mut bitbang = bitbang::Spi::new(
-            Duration::from_hz(10_000),
+        // let mut bitbang = bitbang::Spi::new(
+        //     Duration::from_hz(10_000),
+        //     Duration::from_nanos(Self::CS_HIGH_TIME_NS as u64),
+        //     bitbang::Cpol::_0,
+        //     bitbang::Cpha::_0,
+        //     &mut ncs,
+        //     &mut sck,
+        //     &mut d0,
+        //     &mut d1,
+        // );
+
+        let mut bitbang = bitbang::QuadSpi::new(
+            Duration::from_hz(50_000),
             Duration::from_nanos(Self::CS_HIGH_TIME_NS as u64),
             bitbang::Cpol::_0,
             bitbang::Cpha::_0,
@@ -89,34 +106,92 @@ impl<'d, T: qspi::Instance> Device<'d, T> {
             &mut sck,
             &mut d0,
             &mut d1,
+            &mut d2,
+            &mut d3,
         );
-
-        // let id = &mut [0; 1 + 3];
-        // bitbang.transmit(&[instruction::RDID], id);
-
-        // bitbang.write(&[instruction::WREN]);
-        // bitbang.write(&[instruction::SE, 0x0, 0x0, 0x0]);
-        // let mut buf = [0, 0];
-        // loop {
-        //     bitbang.transmit(&[instruction::RDSR], &mut buf);
-        //     let sr: &SR = bytemuck::cast_ref(&buf[1]);
-        //     if !sr.contains(SR::WIP) {
-        //         break;
-        //     }
-        // }
 
         // let mut buf = [0; 1 + 3 + 128];
         // bitbang.transmit(&[instruction::READ, 0x0, 0x0, 0x0], &mut buf);
 
-        bitbang.write(&[instruction::WREN]);
-        bitbang.write(&[instruction::WRSR, bytemuck::cast(SR::QE)]);
+        bitbang.single_write(&[instruction::RSTEN]);
+        bitbang.single_write(&[instruction::RST]);
+
+        bitbang.single_write(&[instruction::WREN]);
+        bitbang.single_write(&[instruction::EN4B]);
+        // bitbang.single_write(&[instruction::WRSR, bytemuck::cast(SR::QE)]);
+
+        let id = &mut [0; 1 + 3];
+        bitbang.single_transfer(&[instruction::RDID], id);
+
+        Timer::after_millis(1200).await;
+
         let mut buf = [0, 0];
+        bitbang.single_transfer(&[instruction::RDSR], &mut buf);
+        let sr: SR = bytemuck::cast(buf[1]);
+
+        bitbang.single_transfer(&[instruction::RDCR], &mut buf);
+        let cr: CR = bytemuck::cast(buf[1]);
+
         loop {
-            bitbang.transmit(&[instruction::RDSR], &mut buf);
+            bitbang.single_transfer(&[instruction::RDSR], &mut buf);
             let sr: SR = bytemuck::cast(buf[1]);
-            if !sr.contains(SR::WIP) && !sr.contains(SR::WEL) {
+            if !sr.contains(SR::WIP) {
                 break;
             }
+        }
+
+        let buf = UnsafeCell::new([0u8; 1 + 4 + 128]);
+        let proceed = AtomicBool::new(false);
+
+        bitbang.quad_write(
+            &[],
+            &QuadTransfer::from_config(transfer::wren(Mode::Quad), AddressSize::_32bit),
+        );
+        bitbang.quad_write(
+            &[
+                0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe, 0xef, 0xcd, 0xab, 0x89,
+                0x67, 0x45, 0x23, 0x01,
+            ],
+            &QuadTransfer::from_config(transfer::pp(Mode::Quad, 32), AddressSize::_32bit),
+        );
+
+        let mut sr: SR = SR::empty();
+        loop {
+            bitbang.quad_read(
+                slice::from_mut(bytemuck::cast_mut(&mut sr)),
+                &QuadTransfer::from_config(
+                    transfer::rdsr(Mode::Quad),
+                    AddressSize::_32bit,
+                ),
+            );
+            if !sr.contains(SR::WIP) {
+                break;
+            }
+        }
+
+        while !proceed.load(Ordering::SeqCst) {
+            let instruction = AtomicU8::new(instruction::QREAD);
+            let address = AtomicU32::new(0);
+
+            let instruction = instruction.load(Ordering::SeqCst);
+            let address = address.load(Ordering::SeqCst);
+            let address_bytes = address.to_be_bytes();
+
+            let buf = unsafe { &mut *buf.get() };
+            // buf[0] = instruction;
+            // buf[1] = address_bytes[0];
+            // buf[2] = address_bytes[1];
+            // buf[3] = address_bytes[2];
+            // buf[4] = address_bytes[3];
+            bitbang.quad_read(
+                buf,
+                &QuadTransfer {
+                    instruction: Some((instruction, bitbang::Mode::Single)),
+                    address: Some((address, bitbang::Mode::Single, AddressSize::_32bit)),
+                    data: Some(bitbang::Mode::Quad),
+                    dummy_cycles: 8,
+                },
+            );
         }
 
         forget(bitbang);
@@ -132,7 +207,7 @@ impl<'d, T: qspi::Instance> Device<'d, T> {
             memory_size: size,
             address_size,
             prescaler,
-            fifo_threshold: qspi::enums::FIFOThresholdLevel::_32Bytes,
+            fifo_threshold: qspi::enums::FIFOThresholdLevel::_4Bytes,
             cs_high_time: match (Self::CS_HIGH_TIME_NS as f32 / 1e9 * spi_freq.0 as f32)
                 .ceil() as u32
             {
@@ -148,15 +223,17 @@ impl<'d, T: qspi::Instance> Device<'d, T> {
             },
         };
 
-        let mut spi = qspi::Qspi::new_bank1(spi, d0, d1, d2, d3, sck, ncs, dma, spi_cfg);
+        todo!()
 
-        if matches!(address_size, qspi::enums::AddressSize::_32bit) {
-            spi.command(transfer::en4b(Mode::QPI));
-        }
+        // let mut spi = qspi::Qspi::new_bank1(spi, d0, d1, d2, d3, sck, ncs, dma, spi_cfg);
 
-        Self::wait_write_done(&mut spi, Duration::from_micros(10)).await;
+        // if matches!(address_size, qspi::enums::AddressSize::_32bit) {
+        //     spi.command(transfer::en4b(Mode::Quad));
+        // }
 
-        Self { size, spi }
+        // Self::wait_write_done(&mut spi, Duration::from_micros(10)).await;
+
+        // Self { size, spi }
     }
 
     /// Read some data from flash.
@@ -164,7 +241,8 @@ impl<'d, T: qspi::Instance> Device<'d, T> {
     /// Wraps on address or flash size overflow.
     pub async fn read(&mut self, data: &mut [u8], address: u32) {
         self.spi
-            .read_dma(data, transfer::qread(address, qspi::enums::DummyCycles::_8))
+            // .read_dma(data, transfer::qread(address, qspi::enums::DummyCycles::_8))
+            .read_dma(data, transfer::read(address))
             .await
     }
 
@@ -179,14 +257,14 @@ impl<'d, T: qspi::Instance> Device<'d, T> {
         let (prefix, data) = data.split_at(prefix_len as usize);
 
         if !prefix.is_empty() {
-            self.spi.command(transfer::wren(Mode::QPI));
-            self.spi.write_dma(prefix, transfer::pp(Mode::QPI, address)).await;
+            self.spi.command(transfer::wren(Mode::Quad));
+            self.spi.write_dma(prefix, transfer::pp(Mode::Quad, address)).await;
             Self::wait_write_done(&mut self.spi, Duration::from_micros(10)).await;
         }
 
         for section in data.chunks(chunk_size as usize) {
-            self.spi.command(transfer::wren(Mode::QPI));
-            self.spi.write_dma(section, transfer::pp(Mode::QPI, address)).await;
+            self.spi.command(transfer::wren(Mode::Quad));
+            self.spi.write_dma(section, transfer::pp(Mode::Quad, offset)).await;
 
             offset = offset.overflowing_add(chunk_size).0;
 
@@ -237,12 +315,12 @@ impl<'d, T: qspi::Instance> Device<'d, T> {
         let mut address = range.start;
 
         while range.contains(&address) && !wrapped {
-            self.spi.command(transfer::wren(Mode::QPI));
+            self.spi.command(transfer::wren(Mode::Quad));
             let align = best_fit(address.wrapping_add(1), range);
             let (transfer, t_ms) = match align {
-                | ALIGN_4K => (transfer::se(Mode::QPI, address), 20),
-                | ALIGN_32K => (transfer::be32k(Mode::QPI, address), 100),
-                | ALIGN_64K => (transfer::be(Mode::QPI, address), 200),
+                | ALIGN_4K => (transfer::se(Mode::Quad, address), 20),
+                | ALIGN_32K => (transfer::be32k(Mode::Quad, address), 100),
+                | ALIGN_64K => (transfer::be(Mode::Quad, address), 200),
                 | _ => unreachable!(),
             };
             self.spi.command(transfer);
@@ -254,9 +332,9 @@ impl<'d, T: qspi::Instance> Device<'d, T> {
 
     /// Erase all data from flash, i.e., change all 0s back to 1s.
     pub async fn erase_chip(&mut self) {
-        self.spi.command(transfer::wren(Mode::QPI));
+        self.spi.command(transfer::wren(Mode::Quad));
 
-        self.spi.command(transfer::ce(Mode::QPI));
+        self.spi.command(transfer::ce(Mode::Quad));
         Self::wait_write_done(&mut self.spi, Duration::from_secs(100)).await;
     }
 
@@ -265,7 +343,7 @@ impl<'d, T: qspi::Instance> Device<'d, T> {
         loop {
             spi.read_dma(
                 slice::from_mut(bytemuck::cast_mut(&mut sr)),
-                transfer::rdsr(Mode::SPI),
+                transfer::rdsr(Mode::Quad),
             )
             .await;
             if !sr.contains(SR::WIP) {
@@ -381,8 +459,8 @@ bitflags! {
 impl From<Mode> for QspiWidth {
     fn from(value: Mode) -> Self {
         match value {
-            | Mode::SPI => QspiWidth::SING,
-            | Mode::QPI => QspiWidth::QUAD,
+            | Mode::Single => QspiWidth::SING,
+            | Mode::Quad => QspiWidth::QUAD,
         }
     }
 }
@@ -390,8 +468,8 @@ impl From<Mode> for QspiWidth {
 impl From<Mode> for usize {
     fn from(value: Mode) -> Self {
         match value {
-            | Mode::SPI => 1,
-            | Mode::QPI => 4,
+            | Mode::Single => 1,
+            | Mode::Quad => 4,
         }
     }
 }
@@ -512,8 +590,8 @@ pub mod transfer {
     pub fn rdid() -> TransferConfig {
         TransferConfig {
             instruction: instruction::RDID,
-            iwidth: Mode::SPI.into(),
-            dwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
+            dwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -530,8 +608,8 @@ pub mod transfer {
         TransferConfig {
             instruction: instruction::RES,
             dummy: match mode {
-                | Mode::SPI => DummyCycles::_8,
-                | Mode::QPI => DummyCycles::_2,
+                | Mode::Single => DummyCycles::_8,
+                | Mode::Quad => DummyCycles::_2,
             },
             iwidth: mode.into(),
             dwidth: mode.into(),
@@ -543,9 +621,9 @@ pub mod transfer {
         TransferConfig {
             instruction: instruction::REMS,
             address: Some(device_id_first as u32),
-            iwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
             awidth: QspiWidth::SING,
-            dwidth: Mode::SPI.into(),
+            dwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -553,8 +631,8 @@ pub mod transfer {
     pub fn qpiid() -> TransferConfig {
         TransferConfig {
             instruction: instruction::QPIID,
-            iwidth: Mode::QPI.into(),
-            dwidth: Mode::QPI.into(),
+            iwidth: Mode::Quad.into(),
+            dwidth: Mode::Quad.into(),
             ..Default::default()
         }
     }
@@ -602,13 +680,29 @@ pub mod transfer {
         }
     }
 
+    pub fn eqio() -> TransferConfig {
+        TransferConfig {
+            instruction: instruction::EQIO,
+            iwidth: Mode::Single.into(),
+            ..Default::default()
+        }
+    }
+
+    pub fn rstqio() -> TransferConfig {
+        TransferConfig {
+            instruction: instruction::RSTQIO,
+            iwidth: Mode::Quad.into(),
+            ..Default::default()
+        }
+    }
+
     pub fn read(address: u32) -> TransferConfig {
         TransferConfig {
             instruction: instruction::READ,
             address: Some(address),
-            iwidth: Mode::SPI.into(),
-            awidth: Mode::SPI.into(),
-            dwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
+            awidth: Mode::Single.into(),
+            dwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -618,9 +712,9 @@ pub mod transfer {
             instruction: instruction::FAST_READ,
             address: Some(address),
             dummy,
-            iwidth: Mode::SPI.into(),
-            awidth: Mode::SPI.into(),
-            dwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
+            awidth: Mode::Single.into(),
+            dwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -630,8 +724,8 @@ pub mod transfer {
             instruction: instruction::DREAD,
             address: Some(address),
             dummy,
-            iwidth: Mode::SPI.into(),
-            awidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
+            awidth: Mode::Single.into(),
             dwidth: QspiWidth::DUAL,
             ..Default::default()
         }
@@ -642,7 +736,7 @@ pub mod transfer {
             instruction: instruction::_2READ,
             address: Some(address),
             dummy,
-            iwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
             awidth: QspiWidth::DUAL,
             dwidth: QspiWidth::DUAL,
             ..Default::default()
@@ -654,8 +748,8 @@ pub mod transfer {
             instruction: instruction::QREAD,
             address: Some(address),
             dummy,
-            iwidth: Mode::SPI.into(),
-            awidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
+            awidth: Mode::Single.into(),
             dwidth: QspiWidth::QUAD,
             ..Default::default()
         }
@@ -678,7 +772,7 @@ pub mod transfer {
             instruction: instruction::FASTDTRD,
             address: Some(address),
             dummy,
-            iwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
             awidth: QspiWidth::SING,
             dwidth: QspiWidth::SING,
             ..Default::default()
@@ -690,7 +784,7 @@ pub mod transfer {
             instruction: instruction::_2DTRD,
             address: Some(address),
             dummy,
-            iwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
             awidth: QspiWidth::DUAL,
             dwidth: QspiWidth::DUAL,
             ..Default::default()
@@ -712,8 +806,8 @@ pub mod transfer {
     pub fn rdfbr() -> TransferConfig {
         TransferConfig {
             instruction: instruction::RDFBR,
-            iwidth: Mode::SPI.into(),
-            dwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
+            dwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -721,8 +815,8 @@ pub mod transfer {
     pub fn wrfbr() -> TransferConfig {
         TransferConfig {
             instruction: instruction::WRFBR,
-            iwidth: Mode::SPI.into(),
-            dwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
+            dwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -730,7 +824,7 @@ pub mod transfer {
     pub fn esfbr() -> TransferConfig {
         TransferConfig {
             instruction: instruction::ESFBR,
-            iwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -775,7 +869,7 @@ pub mod transfer {
 
     pub fn pp(mode: Mode, address: u32) -> TransferConfig {
         TransferConfig {
-            instruction: instruction::BE,
+            instruction: instruction::PP,
             address: Some(address),
             iwidth: mode.into(),
             awidth: mode.into(),
@@ -788,7 +882,7 @@ pub mod transfer {
         TransferConfig {
             instruction: instruction::_4PP,
             address: Some(address),
-            iwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
             awidth: QspiWidth::QUAD,
             dwidth: QspiWidth::QUAD,
             ..Default::default()
@@ -839,8 +933,8 @@ pub mod transfer {
     pub fn rdlr() -> TransferConfig {
         TransferConfig {
             instruction: instruction::RDLR,
-            iwidth: Mode::SPI.into(),
-            dwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
+            dwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -848,8 +942,8 @@ pub mod transfer {
     pub fn wrlr() -> TransferConfig {
         TransferConfig {
             instruction: instruction::WRLR,
-            iwidth: Mode::SPI.into(),
-            dwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
+            dwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -857,7 +951,7 @@ pub mod transfer {
     pub fn spblk() -> TransferConfig {
         TransferConfig {
             instruction: instruction::SPBLK,
-            iwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -865,8 +959,8 @@ pub mod transfer {
     pub fn rdspblk() -> TransferConfig {
         TransferConfig {
             instruction: instruction::RDSPBLK,
-            iwidth: Mode::SPI.into(),
-            dwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
+            dwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -875,9 +969,9 @@ pub mod transfer {
         TransferConfig {
             instruction: instruction::RDSPB,
             address: Some(address),
-            iwidth: Mode::SPI.into(),
-            awidth: Mode::SPI.into(),
-            dwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
+            awidth: Mode::Single.into(),
+            dwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -885,7 +979,7 @@ pub mod transfer {
     pub fn esspb() -> TransferConfig {
         TransferConfig {
             instruction: instruction::ESSPB,
-            iwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -894,8 +988,8 @@ pub mod transfer {
         TransferConfig {
             instruction: instruction::WRSPB,
             address: Some(address),
-            iwidth: Mode::SPI.into(),
-            awidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
+            awidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -904,9 +998,9 @@ pub mod transfer {
         TransferConfig {
             instruction: instruction::RDDPB,
             address: Some(address),
-            iwidth: Mode::SPI.into(),
-            awidth: Mode::SPI.into(),
-            dwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
+            awidth: Mode::Single.into(),
+            dwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -915,9 +1009,9 @@ pub mod transfer {
         TransferConfig {
             instruction: instruction::WRSPB,
             address: Some(address),
-            iwidth: Mode::SPI.into(),
-            awidth: Mode::SPI.into(),
-            dwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
+            awidth: Mode::Single.into(),
+            dwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -925,7 +1019,7 @@ pub mod transfer {
     pub fn gblk() -> TransferConfig {
         TransferConfig {
             instruction: instruction::GBLK,
-            iwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -933,7 +1027,7 @@ pub mod transfer {
     pub fn gbulk() -> TransferConfig {
         TransferConfig {
             instruction: instruction::GBULK,
-            iwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -941,8 +1035,8 @@ pub mod transfer {
     pub fn wrpass() -> TransferConfig {
         TransferConfig {
             instruction: instruction::WRPASS,
-            iwidth: Mode::SPI.into(),
-            dwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
+            dwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -950,8 +1044,8 @@ pub mod transfer {
     pub fn rdpass() -> TransferConfig {
         TransferConfig {
             instruction: instruction::RDPASS,
-            iwidth: Mode::SPI.into(),
-            dwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
+            dwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
@@ -959,8 +1053,8 @@ pub mod transfer {
     pub fn passulk() -> TransferConfig {
         TransferConfig {
             instruction: instruction::PASSULK,
-            iwidth: Mode::SPI.into(),
-            dwidth: Mode::SPI.into(),
+            iwidth: Mode::Single.into(),
+            dwidth: Mode::Single.into(),
             ..Default::default()
         }
     }
