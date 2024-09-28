@@ -69,11 +69,17 @@ tap = "1.0.1"
 # embassy-boot = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
 # embassy-embedded-hal = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
 # embassy-executor-macros = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
-embassy-executor = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
-embassy-futures = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
-embassy-net = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
-embassy-stm32 = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
-embassy-sync = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
-embassy-time = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
+# embassy-executor = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
+# embassy-futures = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
+# embassy-net = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
+# embassy-stm32 = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
+# embassy-sync = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
+# embassy-time = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
 # embassy-time-driver = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
 # embassy-time-queue-driver = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
+embassy-net = { path = "../embassy/embassy-net" }
+embassy-executor = { path = "../embassy/embassy-executor" }
+embassy-futures = { path = "../embassy/embassy-futures" }
+embassy-stm32 = { path = "../embassy/embassy-stm32" }
+embassy-sync = { path = "../embassy/embassy-sync" }
+embassy-time = { path = "../embassy/embassy-time" }

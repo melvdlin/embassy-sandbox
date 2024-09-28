@@ -6,6 +6,7 @@
 #![feature(layout_for_ptr)]
 #![allow(internal_features)]
 
+use core::array;
 use core::fmt::Write as FmtWrite;
 #[allow(unused)]
 use core::intrinsics::breakpoint;
@@ -14,6 +15,7 @@ use core::str::FromStr;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::yield_now;
+use embassy_sandbox::flash::{self, ExtendedPins};
 use embassy_stm32::eth::PacketQueue;
 use embassy_stm32::time::Hertz;
 use embassy_stm32::{bind_interrupts, exti, gpio, qspi, Peripheral};
@@ -164,42 +166,32 @@ async fn _main(spawner: Spawner) -> ! {
         button.wait_for_falling_edge().await;
     }
 
-    let mut flash = embassy_sandbox::flash::Device::new(
+    let mut flash = flash::Device::new(
         qspi::enums::MemorySize::_64MiB,
         ahb_freq,
         128,
         p.QUADSPI,
         // d0
-        // p.PC7,
         p.PC9,
         // d1
-        // p.PC6,
         p.PC10,
         // d2
-        // p.PJ1,
         p.PE2,
         // d3
-        // p.PF6,
         p.PD13,
         // sck
-        // p.PJ0,
         p.PB2,
         // ncs
-        // p.PC8,
         p.PB6,
         p.DMA2_CH2,
-        None,
+        None::<ExtendedPins>,
     )
     .await;
-
     // flash.erase_chip().await;
     // flash.erase(4 << 10..=(4 << 10) + 16).await;
 
-    let values = &mut [0; 256];
-    for (i, v) in values.iter_mut().enumerate() {
-        *v = i as u8;
-    }
-    flash.program(&*values, 32).await;
+    // let mut values: [u8; 256] = array::from_fn(|n| n as u8);
+    // flash.program(&values, 32).await;
 
     static BUF: Mutex<ThreadModeRawMutex, [u8; 0xFFFF]> =
         Mutex::new([0b10100101; 0xFFFF]);

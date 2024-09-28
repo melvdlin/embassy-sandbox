@@ -1,21 +1,24 @@
-use core::cell::{SyncUnsafeCell, UnsafeCell};
 use core::mem::forget;
 use core::range::RangeInclusive;
 use core::slice;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
 use bitflags::bitflags;
-use embassy_futures::block_on;
 use embassy_stm32::mode::Async;
-use embassy_stm32::qspi::enums::{AddressSize, QspiWidth};
-use embassy_stm32::qspi::{self, Qspi, TransferConfig};
+use embassy_stm32::qspi::enums::QspiWidth;
+use embassy_stm32::qspi::{self, Qspi};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::{gpio, Peripheral};
-use embassy_sync::blocking_mutex::CriticalSectionMutex;
 use embassy_time::{Duration, Timer};
 use num_traits::float::FloatCore;
 
-use crate::bitbang::{self, QuadTransfer};
+macro_rules! cast_to_slice {
+    ($ref:expr) => {
+        slice::from_ref(bytemuck::cast_ref($ref))
+    };
+    (mut $ref:expr) => {
+        slice::from_mut(bytemuck::cast_mut($ref))
+    };
+}
 
 pub struct Device<'d, T: qspi::Instance> {
     size: qspi::enums::MemorySize,
@@ -30,13 +33,13 @@ pub enum Mode {
     Quad,
 }
 
-pub struct ExtendedPins<NWP: gpio::Pin, NRESET: gpio::Pin> {
+pub struct ExtendedPins<NWP = gpio::AnyPin, NRESET = gpio::AnyPin> {
     pub nwp: NWP,
     pub nreset: NRESET,
 }
 
 impl<'d, T: qspi::Instance> Device<'d, T> {
-    const CS_HIGH_TIME_NS: u32 = 30;
+    const CS_HIGH_TIME_NS: u64 = 30;
     const MAX_FREQ: Hertz = Hertz(60_000_000);
 
     pub const fn size(&self) -> qspi::enums::MemorySize {
@@ -53,161 +56,54 @@ impl<'d, T: qspi::Instance> Device<'d, T> {
         ahb_freq: Hertz,
         prescaler: u8,
         spi: impl Peripheral<P = T> + 'd,
-        d0: impl Peripheral<P = impl gpio::Pin /* qspi::BK1D0Pin<T> */> + 'd,
-        d1: impl Peripheral<P = impl gpio::Pin /* qspi::BK1D1Pin<T> */> + 'd,
-        d2: impl Peripheral<P = impl gpio::Pin /* qspi::BK1D2Pin<T> */> + 'd,
-        d3: impl Peripheral<P = impl gpio::Pin /* qspi::BK1D3Pin<T> */> + 'd,
-        sck: impl Peripheral<P = impl gpio::Pin /* qspi::SckPin<T> */> + 'd,
-        ncs: impl Peripheral<P = impl gpio::Pin /* qspi::BK1NSSPin<T> */> + 'd,
+        d0: impl Peripheral<P = impl qspi::BK1D0Pin<T>> + 'd,
+        d1: impl Peripheral<P = impl qspi::BK1D1Pin<T>> + 'd,
+        d2: impl Peripheral<P = impl qspi::BK1D2Pin<T>> + 'd,
+        d3: impl Peripheral<P = impl qspi::BK1D3Pin<T>> + 'd,
+        sck: impl Peripheral<P = impl qspi::SckPin<T>> + 'd,
+        ncs: impl Peripheral<P = impl qspi::BK1NSSPin<T>> + 'd,
         dma: impl Peripheral<P = impl qspi::QuadDma<T>> + 'd,
-        extended: Option<ExtendedPins<gpio::AnyPin, gpio::AnyPin>>,
+        extended: Option<
+            ExtendedPins<
+                impl Peripheral<P = impl gpio::Pin>,
+                impl Peripheral<P = impl gpio::Pin>,
+            >,
+        >,
     ) -> Self {
         let spi_freq = ahb_freq / prescaler as u32;
         assert!(spi_freq < Self::MAX_FREQ);
 
-        let mut d0 = d0;
-        let mut d1 = d1;
         let mut d2 = d2;
         let mut d3 = d3;
-        let mut sck = sck;
-        let mut ncs = ncs;
-        let mut extended = extended;
-
-        // let nwp = if let Some(pins) = &mut extended {
-        //     gpio::Output::new(&mut pins.nwp, gpio::Level::High, gpio::Speed::VeryHigh)
-        // } else {
-        //     gpio::Output::new(&mut d2, gpio::Level::High, gpio::Speed::VeryHigh)
-        // };
-        // forget(nwp);
-
-        // if let Some(pins) = &mut extended {
-        //     reset(&mut ncs, &mut pins.nreset).await;
-        // } else {
-        //     reset(&mut ncs, &mut d3).await;
-        // }
-
-        // let mut bitbang = bitbang::Spi::new(
-        //     Duration::from_hz(10_000),
-        //     Duration::from_nanos(Self::CS_HIGH_TIME_NS as u64),
-        //     bitbang::Cpol::_0,
-        //     bitbang::Cpha::_0,
-        //     &mut ncs,
-        //     &mut sck,
-        //     &mut d0,
-        //     &mut d1,
-        // );
-
-        let mut bitbang = bitbang::QuadSpi::new(
-            Duration::from_hz(50_000),
-            Duration::from_nanos(Self::CS_HIGH_TIME_NS as u64),
-            bitbang::Cpol::_0,
-            bitbang::Cpha::_0,
-            &mut ncs,
-            &mut sck,
-            &mut d0,
-            &mut d1,
-            &mut d2,
-            &mut d3,
-        );
-
-        // let mut buf = [0; 1 + 3 + 128];
-        // bitbang.transmit(&[instruction::READ, 0x0, 0x0, 0x0], &mut buf);
-
-        bitbang.single_write(&[instruction::RSTEN]);
-        bitbang.single_write(&[instruction::RST]);
-
-        bitbang.single_write(&[instruction::WREN]);
-        bitbang.single_write(&[instruction::EN4B]);
-        // bitbang.single_write(&[instruction::WRSR, bytemuck::cast(SR::QE)]);
-
-        let id = &mut [0; 1 + 3];
-        bitbang.single_transfer(&[instruction::RDID], id);
-
-        Timer::after_millis(1200).await;
-
-        let mut buf = [0, 0];
-        bitbang.single_transfer(&[instruction::RDSR], &mut buf);
-        let sr: SR = bytemuck::cast(buf[1]);
-
-        bitbang.single_transfer(&[instruction::RDCR], &mut buf);
-        let cr: CR = bytemuck::cast(buf[1]);
-
-        loop {
-            bitbang.single_transfer(&[instruction::RDSR], &mut buf);
-            let sr: SR = bytemuck::cast(buf[1]);
-            if !sr.contains(SR::WIP) {
-                break;
-            }
+        if let Some(ExtendedPins { nwp, nreset }) = extended {
+            forget(gpio::Output::new(
+                nwp,
+                gpio::Level::High,
+                gpio::Speed::VeryHigh,
+            ));
+            forget(gpio::Output::new(
+                nreset,
+                gpio::Level::High,
+                gpio::Speed::VeryHigh,
+            ));
+        } else {
+            forget(gpio::Output::new(
+                &mut d2,
+                gpio::Level::High,
+                gpio::Speed::VeryHigh,
+            ));
+            forget(gpio::Output::new(
+                &mut d3,
+                gpio::Level::High,
+                gpio::Speed::VeryHigh,
+            ));
         }
-
-        let buf = UnsafeCell::new([0u8; 1 + 4 + 128]);
-        let proceed = AtomicBool::new(false);
-
-        bitbang.quad_write(
-            &[],
-            &QuadTransfer::from_config(transfer::wren(Mode::Quad), AddressSize::_32bit),
-        );
-        bitbang.quad_write(
-            &[
-                0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe, 0xef, 0xcd, 0xab, 0x89,
-                0x67, 0x45, 0x23, 0x01,
-            ],
-            &QuadTransfer::from_config(transfer::pp(Mode::Quad, 32), AddressSize::_32bit),
-        );
-
-        let mut sr: SR = SR::empty();
-        loop {
-            bitbang.quad_read(
-                slice::from_mut(bytemuck::cast_mut(&mut sr)),
-                &QuadTransfer::from_config(
-                    transfer::rdsr(Mode::Quad),
-                    AddressSize::_32bit,
-                ),
-            );
-            if !sr.contains(SR::WIP) {
-                break;
-            }
-        }
-
-        while !proceed.load(Ordering::SeqCst) {
-            let instruction = AtomicU8::new(instruction::QREAD);
-            let address = AtomicU32::new(0);
-
-            let instruction = instruction.load(Ordering::SeqCst);
-            let address = address.load(Ordering::SeqCst);
-            let address_bytes = address.to_be_bytes();
-
-            let buf = unsafe { &mut *buf.get() };
-            // buf[0] = instruction;
-            // buf[1] = address_bytes[0];
-            // buf[2] = address_bytes[1];
-            // buf[3] = address_bytes[2];
-            // buf[4] = address_bytes[3];
-            bitbang.quad_read(
-                buf,
-                &QuadTransfer {
-                    instruction: Some((instruction, bitbang::Mode::Single)),
-                    address: Some((address, bitbang::Mode::Single, AddressSize::_32bit)),
-                    data: Some(bitbang::Mode::Quad),
-                    dummy_cycles: 8,
-                },
-            );
-        }
-
-        forget(bitbang);
-
-        let address_bits = u8::from(size) + 1;
-        let address_size = match address_bits.div_ceil(8) {
-            | 1..=3 => qspi::enums::AddressSize::_24bit,
-            | 4 => qspi::enums::AddressSize::_32bit,
-            | _ => panic!("memory of size {} is unaddressable", address_bits),
-        };
 
         let spi_cfg = qspi::Config {
             memory_size: size,
-            address_size,
+            address_size: qspi::enums::AddressSize::_32bit,
             prescaler,
-            fifo_threshold: qspi::enums::FIFOThresholdLevel::_4Bytes,
+            fifo_threshold: qspi::enums::FIFOThresholdLevel::_1Bytes,
             cs_high_time: match (Self::CS_HIGH_TIME_NS as f32 / 1e9 * spi_freq.0 as f32)
                 .ceil() as u32
             {
@@ -222,18 +118,27 @@ impl<'d, T: qspi::Instance> Device<'d, T> {
                 | _ => panic!("spi frequency too high"),
             },
         };
-
-        todo!()
-
-        // let mut spi = qspi::Qspi::new_bank1(spi, d0, d1, d2, d3, sck, ncs, dma, spi_cfg);
-
-        // if matches!(address_size, qspi::enums::AddressSize::_32bit) {
-        //     spi.command(transfer::en4b(Mode::Quad));
-        // }
+        let mut spi = qspi::Qspi::new_bank1(spi, d0, d1, d2, d3, sck, ncs, dma, spi_cfg);
 
         // Self::wait_write_done(&mut spi, Duration::from_micros(10)).await;
 
-        // Self { size, spi }
+        spi.command(transfer::rsten(Mode::Single));
+        spi.command(transfer::rst(Mode::Single));
+        Timer::after_millis(1200).await;
+
+        spi.command(transfer::en4b(Mode::Single));
+        // spi.command(transfer::eqio());
+
+        let mut id = [0; 3];
+        spi.read_dma(&mut id, transfer::rdid()).await;
+
+        let mut sr = SR::empty();
+        spi.read_dma(cast_to_slice!(mut &mut sr), transfer::rdsr(Mode::Single)).await;
+
+        let mut cr = CR::empty();
+        spi.read_dma(cast_to_slice!(mut &mut cr), transfer::rdcr(Mode::Single)).await;
+
+        Self { size, spi }
     }
 
     /// Read some data from flash.
@@ -257,14 +162,14 @@ impl<'d, T: qspi::Instance> Device<'d, T> {
         let (prefix, data) = data.split_at(prefix_len as usize);
 
         if !prefix.is_empty() {
-            self.spi.command(transfer::wren(Mode::Quad));
-            self.spi.write_dma(prefix, transfer::pp(Mode::Quad, address)).await;
+            self.spi.command(transfer::wren(Mode::Single));
+            self.spi.write_dma(prefix, transfer::pp(Mode::Single, address)).await;
             Self::wait_write_done(&mut self.spi, Duration::from_micros(10)).await;
         }
 
         for section in data.chunks(chunk_size as usize) {
-            self.spi.command(transfer::wren(Mode::Quad));
-            self.spi.write_dma(section, transfer::pp(Mode::Quad, offset)).await;
+            self.spi.command(transfer::wren(Mode::Single));
+            self.spi.write_dma(section, transfer::pp(Mode::Single, offset)).await;
 
             offset = offset.overflowing_add(chunk_size).0;
 
@@ -315,12 +220,12 @@ impl<'d, T: qspi::Instance> Device<'d, T> {
         let mut address = range.start;
 
         while range.contains(&address) && !wrapped {
-            self.spi.command(transfer::wren(Mode::Quad));
+            self.spi.command(transfer::wren(Mode::Single));
             let align = best_fit(address.wrapping_add(1), range);
             let (transfer, t_ms) = match align {
-                | ALIGN_4K => (transfer::se(Mode::Quad, address), 20),
-                | ALIGN_32K => (transfer::be32k(Mode::Quad, address), 100),
-                | ALIGN_64K => (transfer::be(Mode::Quad, address), 200),
+                | ALIGN_4K => (transfer::se(Mode::Single, address), 20),
+                | ALIGN_32K => (transfer::be32k(Mode::Single, address), 100),
+                | ALIGN_64K => (transfer::be(Mode::Single, address), 200),
                 | _ => unreachable!(),
             };
             self.spi.command(transfer);
@@ -332,9 +237,9 @@ impl<'d, T: qspi::Instance> Device<'d, T> {
 
     /// Erase all data from flash, i.e., change all 0s back to 1s.
     pub async fn erase_chip(&mut self) {
-        self.spi.command(transfer::wren(Mode::Quad));
+        self.spi.command(transfer::wren(Mode::Single));
 
-        self.spi.command(transfer::ce(Mode::Quad));
+        self.spi.command(transfer::ce(Mode::Single));
         Self::wait_write_done(&mut self.spi, Duration::from_secs(100)).await;
     }
 
@@ -343,7 +248,7 @@ impl<'d, T: qspi::Instance> Device<'d, T> {
         loop {
             spi.read_dma(
                 slice::from_mut(bytemuck::cast_mut(&mut sr)),
-                transfer::rdsr(Mode::Quad),
+                transfer::rdsr(Mode::Single),
             )
             .await;
             if !sr.contains(SR::WIP) {
