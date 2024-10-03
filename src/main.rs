@@ -5,7 +5,7 @@
 #![feature(core_intrinsics)]
 #![feature(layout_for_ptr)]
 #![allow(internal_features)]
-
+#![allow(unused)]
 use core::array;
 use core::fmt::Write as FmtWrite;
 #[allow(unused)]
@@ -15,10 +15,9 @@ use core::str::FromStr;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::yield_now;
-use embassy_sandbox::flash::{self, ExtendedPins};
 use embassy_stm32::eth::PacketQueue;
 use embassy_stm32::time::Hertz;
-use embassy_stm32::{bind_interrupts, exti, gpio, qspi, Peripheral};
+use embassy_stm32::{bind_interrupts, gpio, Peripheral};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
@@ -161,62 +160,9 @@ async fn _main(spawner: Spawner) -> ! {
     assert_eq!(head, values);
     */
 
-    let proceed = core::sync::atomic::AtomicBool::new(false);
-    while !proceed.load(core::sync::atomic::Ordering::SeqCst) {
+    loop {
         button.wait_for_falling_edge().await;
     }
-
-    let mut flash = flash::Device::new(
-        qspi::enums::MemorySize::_64MiB,
-        ahb_freq,
-        128,
-        p.QUADSPI,
-        // d0
-        p.PC9,
-        // d1
-        p.PC10,
-        // d2
-        p.PE2,
-        // d3
-        p.PD13,
-        // sck
-        p.PB2,
-        // ncs
-        p.PB6,
-        p.DMA2_CH2,
-        None::<ExtendedPins>,
-    )
-    .await;
-    // flash.erase_chip().await;
-    // flash.erase(4 << 10..=(4 << 10) + 16).await;
-
-    // let mut values: [u8; 256] = array::from_fn(|n| n as u8);
-    // flash.program(&values, 32).await;
-
-    static BUF: Mutex<ThreadModeRawMutex, [u8; 0xFFFF]> =
-        Mutex::new([0b10100101; 0xFFFF]);
-    let mut buff = BUF.lock().await;
-    let small_buf = &mut [0; 16];
-
-    // flash.erase(0..=0).await;
-
-    // let values = &[0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01];
-    // flash.program(values, 0).await;
-    flash.read(&mut *buff, 0).await;
-    flash.read(small_buf, buff.len() as u32).await;
-    let block1 = &buff[..16];
-    let block2 = &buff[(4 << 10) - 16..(4 << 10) + 16];
-    let block3 = &buff[(8 << 10) - 16..(8 << 10) + 16];
-    let block4 = &buff[(16 << 10) - 16..(16 << 10) + 16];
-    let block5 = &buff[(24 << 10) - 16..(24 << 10) + 16];
-    let block6 = &buff[(32 << 10) - 16..(32 << 10) + 16];
-    let block7 = &buff[(40 << 10) - 16..(40 << 10) + 16];
-    let block8 = &buff[(48 << 10) - 16..(48 << 10) + 16];
-    let block9 = &buff[(56 << 10) - 16..(56 << 10) + 16];
-    let block10 = &buff[(0xFFFF) - 16..];
-    // assert!(buff[..(4 << 10)].iter().all(|v| *v == 0));
-
-    loop {}
 
     /*
     let ld1 = gpio::Output::new(p.PJ13, gpio::Level::High, gpio::Speed::Low);

@@ -6,5 +6,8 @@
 #![feature(sync_unsafe_cell)]
 #![deny(unused_must_use)]
 
+#[cfg(any())]
 pub mod bitbang;
+#[cfg(any())]
 pub mod flash;
+pub mod tftp;
