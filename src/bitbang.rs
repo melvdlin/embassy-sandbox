@@ -1,11 +1,11 @@
 use core::cmp::max;
 
-use embassy_stm32::{
-    gpio,
-    qspi::{self, enums::AddressSize},
-    Peripheral,
-};
-use embassy_time::{block_for, Duration};
+use embassy_stm32::gpio;
+use embassy_stm32::qspi::enums::AddressSize;
+use embassy_stm32::qspi::{self};
+use embassy_stm32::Peripheral;
+use embassy_time::block_for;
+use embassy_time::Duration;
 use itertools::Itertools;
 
 #[derive(Debug)]

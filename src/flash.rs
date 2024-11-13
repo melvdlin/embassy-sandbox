@@ -3,12 +3,15 @@ use core::range::RangeInclusive;
 use core::slice;
 
 use bitflags::bitflags;
+use embassy_stm32::gpio;
 use embassy_stm32::mode::Async;
 use embassy_stm32::qspi::enums::QspiWidth;
-use embassy_stm32::qspi::{self, Qspi};
+use embassy_stm32::qspi::Qspi;
+use embassy_stm32::qspi::{self};
 use embassy_stm32::time::Hertz;
-use embassy_stm32::{gpio, Peripheral};
-use embassy_time::{Duration, Timer};
+use embassy_stm32::Peripheral;
+use embassy_time::Duration;
+use embassy_time::Timer;
 use num_traits::float::FloatCore;
 
 macro_rules! cast_to_slice {
@@ -464,9 +467,12 @@ pub mod instruction {
 // noinspection DuplicatedCode
 #[allow(clippy::needless_update)]
 pub mod transfer {
-    use super::{instruction, Mode};
-    use embassy_stm32::qspi::enums::{DummyCycles, QspiWidth};
+    use embassy_stm32::qspi::enums::DummyCycles;
+    use embassy_stm32::qspi::enums::QspiWidth;
     use embassy_stm32::qspi::TransferConfig;
+
+    use super::instruction;
+    use super::Mode;
 
     pub fn wren(mode: Mode) -> TransferConfig {
         TransferConfig {

@@ -12,22 +12,28 @@ use core::fmt::Write as FmtWrite;
 use core::intrinsics::breakpoint;
 use core::mem::MaybeUninit;
 use core::str::FromStr;
+
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::yield_now;
+use embassy_stm32::bind_interrupts;
 use embassy_stm32::eth::PacketQueue;
+use embassy_stm32::gpio;
 use embassy_stm32::time::Hertz;
-use embassy_stm32::{bind_interrupts, gpio, Peripheral};
+use embassy_stm32::Peripheral;
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{Delay, Duration, Timer};
+use embassy_time::Delay;
+use embassy_time::Duration;
+use embassy_time::Timer;
 use embedded_io_async::Write as AsyncWrite;
 use heapless::String;
 #[allow(unused_imports)]
 use panic_halt as _;
 use rand_core::RngCore;
-use static_cell::{ConstStaticCell, StaticCell};
+use static_cell::ConstStaticCell;
+use static_cell::StaticCell;
 use stm32_fmc::Sdram;
 
 const HOSTNAME: &str = "STM32F7-DISCO";

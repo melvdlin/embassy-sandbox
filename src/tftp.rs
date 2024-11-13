@@ -1,31 +1,38 @@
+use core::error::Error;
 use core::ffi::CStr;
+use core::fmt::Debug;
+use core::fmt::Display;
 
-use embassy_net::udp::{RecvError, SendError, UdpMetadata, UdpSocket};
-use embedded_io_async::{Read, Write};
-
+use embassy_net::udp::RecvError;
+use embassy_net::udp::SendError;
+use embassy_net::udp::UdpMetadata;
+use embassy_net::udp::UdpSocket;
+use embedded_io_async::Read;
+use embedded_io_async::Write;
+use ttftp::client::download;
 use ttftp::client::upload;
 use ttftp::client::upload::*;
 use ttftp::client::FilenameError;
 use ttftp::client::TransferError as TtftpError;
 use ttftp::Mode;
 
-pub async fn upload<'filename, 'rx, F: Read>(
+pub async fn upload<'filename, F: Read>(
     filename: &'filename CStr,
     file: F,
     sock: &UdpSocket<'_>,
     remote: UdpMetadata,
     file_buf: &mut [u8; ttftp::BLOCK_SIZE],
-    rx: &'rx mut [u8; ttftp::PACKET_SIZE],
+    rx: &mut [u8; ttftp::PACKET_SIZE],
     tx: &mut [u8; ttftp::PACKET_SIZE],
-) -> Result<(), TransferError<'filename, 'rx, F::Error>> {
+) -> Result<(), TransferError<'filename, 'static, F::Error>> {
     assert!(sock.payload_recv_capacity() >= ttftp::PACKET_SIZE);
+
+    let mut file = file;
+    let mut buf_offset = 0;
 
     let mut state;
     let send;
-
     (state, send) = upload::new(tx, filename, Mode::Octect)?;
-    let mut file = file;
-    let mut buf_offset = 0;
 
     loop {
         sock.send_to(&tx[..send], remote).await?;
@@ -72,14 +79,49 @@ async fn fill_buf<F: Read>(file: F, buf: &mut [u8]) -> Result<usize, F::Error> {
     Ok(written)
 }
 
-pub async fn download<'filename, 'rx, F: Write>(
+pub async fn download<'filename, F: Write>(
     filename: &'filename CStr,
     file: F,
     sock: &UdpSocket<'_>,
-    rx: &'rx mut [u8; ttftp::PACKET_SIZE],
+    remote: UdpMetadata,
+    rx: &mut [u8; ttftp::PACKET_SIZE],
     tx: &mut [u8; ttftp::PACKET_SIZE],
-) -> Result<(), TransferError<'filename, 'rx, F::Error>> {
+) -> Result<(), TransferError<'filename, 'static, F::Error>> {
     assert!(sock.payload_recv_capacity() >= ttftp::PACKET_SIZE);
+
+    let mut file = file;
+
+    let mut state;
+    let send;
+    (state, send) = download::new(tx, filename, Mode::Octect)?;
+
+    loop {
+        sock.send_to(&tx[..send], remote).await?;
+        let received = loop {
+            let (received, sender) = sock.recv_from(rx).await?;
+            if sender == remote {
+                break received;
+            }
+        };
+
+        let (result, send) = state.process(&rx[..received], tx);
+
+        if let Some(send) = send {
+            sock.send_to(&tx[..send], remote).await?;
+        }
+
+        state = match result.map_err(TtftpError::strip)? {
+            | download::BlockReceived::Intermediate(awaiting_data, block) => {
+                file.write_all(block).await.map_err(TransferError::File)?;
+                awaiting_data
+            }
+            | download::BlockReceived::Final(block) => {
+                file.write_all(block).await.map_err(TransferError::File)?;
+                break;
+            }
+            | download::BlockReceived::Retransmission(awaiting_data) => awaiting_data,
+        }
+    }
 
     todo!()
 }
@@ -94,6 +136,24 @@ pub enum TransferError<'filename, 'rx, File> {
     Recv(RecvError),
     File(File),
 }
+
+impl<File> Display for TransferError<'_, '_, File> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "file transfer failed: {}",
+            match self {
+                | TransferError::Filename(_) => "bad filename",
+                | TransferError::Tftp(_) => "TTFTP",
+                | TransferError::Send(_) => "UDP send",
+                | TransferError::Recv(_) => "UDP receive",
+                | TransferError::File(_) => "file read or write",
+            }
+        )
+    }
+}
+
+impl<File: Debug> Error for TransferError<'_, '_, File> {}
 
 impl<'filename, File> From<FilenameError<'filename>>
     for TransferError<'filename, 'static, File>
