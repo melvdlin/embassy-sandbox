@@ -1,149 +1,122 @@
-use core::fmt::Display;
+use core::ffi::CStr;
 
-#[derive(Debug)]
-#[derive(Clone, Copy)]
-#[derive(PartialEq, Eq)]
-enum Packet<'a> {
-    Rrq(Rwrq<'a>),
-    Wrq(Rwrq<'a>),
-    Data(Data<'a>),
-    Ack(Ack),
-    Error(Error<'a>),
+use embassy_net::udp::{RecvError, SendError, UdpMetadata, UdpSocket};
+use embedded_io_async::{Read, Write};
+
+use ttftp::client::upload;
+use ttftp::client::upload::*;
+use ttftp::client::FilenameError;
+use ttftp::client::TransferError as TtftpError;
+use ttftp::Mode;
+
+pub async fn upload<'filename, 'rx, F: Read>(
+    filename: &'filename CStr,
+    file: F,
+    sock: &UdpSocket<'_>,
+    remote: UdpMetadata,
+    file_buf: &mut [u8; ttftp::BLOCK_SIZE],
+    rx: &'rx mut [u8; ttftp::PACKET_SIZE],
+    tx: &mut [u8; ttftp::PACKET_SIZE],
+) -> Result<(), TransferError<'filename, 'rx, F::Error>> {
+    assert!(sock.payload_recv_capacity() >= ttftp::PACKET_SIZE);
+
+    let mut state;
+    let send;
+
+    (state, send) = upload::new(tx, filename, Mode::Octect)?;
+    let mut file = file;
+    let mut buf_offset = 0;
+
+    loop {
+        sock.send_to(&tx[..send], remote).await?;
+        let received = loop {
+            let (received, sender) = sock.recv_from(rx).await?;
+            if sender.endpoint == remote.endpoint {
+                break received;
+            }
+        };
+
+        let buf_len = buf_offset
+            + fill_buf(&mut file, &mut file_buf[buf_offset..])
+                .await
+                .map_err(TransferError::File)?;
+        let (result, send) =
+            state.process(&rx[..received], tx, file_buf[..buf_len].iter().copied());
+
+        if let Some(send) = send {
+            sock.send_to(&tx[..send], remote).await?;
+        }
+
+        let consumed;
+        (state, consumed) = match result.map_err(TtftpError::strip)? {
+            | AckReceived::NextBlock(awaiting_ack, consumed) => (awaiting_ack, consumed),
+            | AckReceived::TransferComplete => break,
+            | AckReceived::Retransmission(awaiting_ack) => (awaiting_ack, 0),
+        };
+
+        buf_offset = buf_len - consumed;
+    }
+
+    Ok(())
+}
+
+async fn fill_buf<F: Read>(file: F, buf: &mut [u8]) -> Result<usize, F::Error> {
+    let mut file = file;
+    let mut written = 0;
+    while written < buf.len() {
+        match file.read(&mut buf[written..]).await? {
+            | 0 => return Ok(written),
+            | n => written += n,
+        }
+    }
+    Ok(written)
+}
+
+pub async fn download<'filename, 'rx, F: Write>(
+    filename: &'filename CStr,
+    file: F,
+    sock: &UdpSocket<'_>,
+    rx: &'rx mut [u8; ttftp::PACKET_SIZE],
+    tx: &mut [u8; ttftp::PACKET_SIZE],
+) -> Result<(), TransferError<'filename, 'rx, F::Error>> {
+    assert!(sock.payload_recv_capacity() >= ttftp::PACKET_SIZE);
+
+    todo!()
 }
 
 #[derive(Debug)]
 #[derive(Clone, Copy)]
 #[derive(PartialEq, Eq)]
-struct Rwrq<'a> {
-    filename: &'a str,
-    mode: &'a str,
+pub enum TransferError<'filename, 'rx, File> {
+    Filename(FilenameError<'filename>),
+    Tftp(TtftpError<'rx>),
+    Send(SendError),
+    Recv(RecvError),
+    File(File),
 }
 
-#[derive(Debug)]
-#[derive(Clone, Copy)]
-#[derive(PartialEq, Eq)]
-struct Data<'a> {
-    block_no: u16,
-    data: &'a [u8],
-}
-
-#[derive(Debug)]
-#[derive(Clone, Copy)]
-#[derive(PartialEq, Eq)]
-struct Ack {
-    block_no: u16,
-}
-
-#[derive(Debug)]
-#[derive(Clone, Copy)]
-#[derive(PartialEq, Eq)]
-struct Error<'a> {
-    error_code: u16,
-    message: &'a str,
-}
-
-#[derive(Debug)]
-#[derive(Clone, Copy)]
-#[derive(PartialEq, Eq)]
-struct MalformedPacket;
-
-impl core::error::Error for MalformedPacket {}
-
-impl Display for MalformedPacket {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "malformed packet")
+impl<'filename, File> From<FilenameError<'filename>>
+    for TransferError<'filename, 'static, File>
+{
+    fn from(filename: FilenameError<'filename>) -> Self {
+        TransferError::Filename(filename)
     }
 }
 
-#[derive(Debug)]
-#[derive(Clone, Copy)]
-#[derive(PartialEq, Eq)]
-enum Opcode {
-    Rrq = 1,
-    Wrq = 2,
-    Data = 3,
-    Ack = 4,
-    Error = 5,
-}
-
-impl TryFrom<u16> for Opcode {
-    type Error = UnknownOpcode;
-
-    fn try_from(opcode: u16) -> Result<Self, UnknownOpcode> {
-        Ok(match opcode {
-            | 1 => Self::Rrq,
-            | 2 => Self::Wrq,
-            | 3 => Self::Data,
-            | 4 => Self::Ack,
-            | 5 => Self::Error,
-            | n => return Err(UnknownOpcode(n)),
-        })
-    }
-}
-#[derive(Debug)]
-#[derive(Clone, Copy)]
-#[derive(PartialEq, Eq)]
-pub struct UnknownOpcode(pub u16);
-
-impl core::error::Error for UnknownOpcode {}
-
-impl Display for UnknownOpcode {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "unknown opcode ({})", self.0)
+impl<'rx, File> From<TtftpError<'rx>> for TransferError<'static, 'rx, File> {
+    fn from(tftp: TtftpError<'rx>) -> Self {
+        TransferError::Tftp(tftp)
     }
 }
 
-mod parser {
+impl<File> From<SendError> for TransferError<'static, 'static, File> {
+    fn from(send: SendError) -> Self {
+        TransferError::Send(send)
+    }
+}
 
-    use super::*;
-    use branch::*;
-    use bytes::streaming::*;
-    use combinator::*;
-    use nom::*;
-    use number::streaming::be_u16;
-    use sequence::tuple;
-
-    pub fn parse_packet<'a>(
-        block_size: usize,
-    ) -> impl FnMut(&'a [u8]) -> IResult<&'a [u8], Packet<'a>> {
-        let opcode = |opcode| tag((opcode as u16).to_be_bytes());
-        let cstr = || take_until(b"\0" as &[u8]);
-
-        let rrq = map_res(
-            tuple((opcode(Opcode::Rrq), cstr(), cstr())),
-            |(_opcode, filename, mode)| {
-                Ok::<_, core::str::Utf8Error>(Packet::Rrq(Rwrq {
-                    filename: core::str::from_utf8(filename)?,
-                    mode: core::str::from_utf8(mode)?,
-                }))
-            },
-        );
-        let wrq = map_res(
-            tuple((opcode(Opcode::Wrq), cstr(), cstr())),
-            |(_, filename, mode)| {
-                Ok::<_, core::str::Utf8Error>(Packet::Wrq(Rwrq {
-                    filename: core::str::from_utf8(filename)?,
-                    mode: core::str::from_utf8(mode)?,
-                }))
-            },
-        );
-        let data = tuple((
-            opcode(Opcode::Data),
-            be_u16,
-            take_while_m_n(0, block_size, |_| true),
-        ))
-        .map(|(_, block_no, data)| Packet::Data(Data { block_no, data }));
-        let ack = tuple((opcode(Opcode::Ack), be_u16))
-            .map(|(_, block_no)| Packet::Ack(Ack { block_no }));
-        let error = map_res(
-            tuple((opcode(Opcode::Error), be_u16, cstr())),
-            |(_, error_code, message)| {
-                Ok::<_, core::str::Utf8Error>(Packet::Error(Error {
-                    error_code,
-                    message: core::str::from_utf8(message)?,
-                }))
-            },
-        );
-        alt((rrq, wrq, data, ack, error))
+impl<File> From<RecvError> for TransferError<'static, 'static, File> {
+    fn from(recv: RecvError) -> Self {
+        TransferError::Recv(recv)
     }
 }
