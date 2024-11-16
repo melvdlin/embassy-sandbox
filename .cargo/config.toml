@@ -1,6 +1,4 @@
-rustflags = [
-    "-C", "link-arg=-Map=image.map",
-]
+rustflags = ["-C", "link-arg=-Map=image.map"]
 
 [build]
 target = "thumbv7em-none-eabihf"

@@ -286,6 +286,7 @@ dependencies = [
  "embedded-io-async",
  "heapless",
  "itertools",
+ "memchr",
  "nom",
  "num-traits",
  "panic-halt",
