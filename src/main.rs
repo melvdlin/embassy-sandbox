@@ -16,6 +16,7 @@ use core::str::FromStr;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::yield_now;
+use embassy_net::Ipv4Address;
 use embassy_stm32::bind_interrupts;
 use embassy_stm32::eth::PacketQueue;
 use embassy_stm32::gpio;
@@ -34,7 +35,6 @@ use panic_halt as _;
 use rand_core::RngCore;
 use static_cell::ConstStaticCell;
 use static_cell::StaticCell;
-use stm32_fmc::Sdram;
 
 const HOSTNAME: &str = "STM32F7-DISCO";
 // first octet: locally administered (administratively assigned) unicast address;
@@ -71,89 +71,10 @@ async fn _main(spawner: Spawner) -> ! {
     let mut button =
         embassy_stm32::exti::ExtiInput::new(p.PA0, p.EXTI0, gpio::Pull::Down);
 
-    /* SDRAM
-    let memory: &'static mut [MaybeUninit<u32>] = {
-        static SDRAM: StaticCell<
-            Sdram<
-                embassy_stm32::fmc::Fmc<'static, embassy_stm32::peripherals::FMC>,
-                stm32_fmc::devices::is42s32400f_6::Is42s32400f6,
-            >,
-        > = StaticCell::new();
-        const SDRAM_SIZE: usize = (128 / 8) << 10;
-        let sdram =
-            SDRAM.init(embassy_stm32::fmc::Fmc::sdram_a13bits_d32bits_4banks_bank1(
-                p.FMC,
-                p.PF0,
-                p.PF1,
-                p.PF2,
-                p.PF3,
-                p.PF4,
-                p.PF5,
-                p.PF12,
-                p.PF13,
-                p.PF14,
-                p.PF15,
-                p.PG0,
-                p.PG1,
-                p.PG2,
-                p.PG4,
-                p.PG5,
-                p.PD14,
-                p.PD15,
-                p.PD0,
-                p.PD1,
-                p.PE7,
-                p.PE8,
-                p.PE9,
-                p.PE10,
-                p.PE11,
-                p.PE12,
-                p.PE13,
-                p.PE14,
-                p.PE15,
-                p.PD8,
-                p.PD9,
-                p.PD10,
-                p.PH8,
-                p.PH9,
-                p.PH10,
-                p.PH11,
-                p.PH12,
-                p.PH13,
-                p.PH14,
-                p.PH15,
-                p.PI0,
-                p.PI1,
-                p.PI2,
-                p.PI3,
-                p.PI6,
-                p.PI7,
-                p.PI9,
-                p.PI10,
-                p.PE0,
-                p.PE1,
-                p.PI4,
-                p.PI5,
-                p.PH2,
-                p.PG8,
-                p.PG15,
-                p.PH3,
-                p.PF11,
-                p.PH5,
-                stm32_fmc::devices::is42s32400f_6::Is42s32400f6 {},
-            ));
-        let ptr = sdram.init(&mut Delay);
-        let ptr = ptr.cast::<MaybeUninit<u32>>();
-        // Safety: pointee u32: Sized
-        let size = unsafe { core::mem::size_of_val_raw(ptr) };
-        let len = SDRAM_SIZE / size;
-        // Safety:
-        // - I sure hope `embassy_stm32::fmc::Fmc::sdram_a13bits_d32bits_4banks_bank1` returns a read/write valid pointer
-        // - the source ptr does not escape this scope
-        const _: () = assert!(SDRAM_SIZE <= isize::MAX as usize);
-        assert!((ptr as usize).checked_add(SDRAM_SIZE).is_some());
-        unsafe { core::slice::from_raw_parts_mut(ptr, len) }
-    };
+    // 128 Kib
+    const SDRAM_SIZE: usize = (128 / 8) << 10;
+    let memory: &'static mut [MaybeUninit<u32>] =
+        unsafe { sdram_init::<SDRAM_SIZE>(create_sdram!(p)) };
 
     let (head, tail) = memory.split_at_mut(4);
     let values: &[u32] = &[0x12345678, 0x87654321, 0x89ABCDEF, 0xFEDCBA98];
@@ -164,13 +85,7 @@ async fn _main(spawner: Spawner) -> ! {
         unsafe { core::mem::transmute::<&mut [MaybeUninit<u32>], &mut [u32]>(head) };
 
     assert_eq!(head, values);
-    */
 
-    loop {
-        button.wait_for_falling_edge().await;
-    }
-
-    /*
     let ld1 = gpio::Output::new(p.PJ13, gpio::Level::High, gpio::Speed::Low);
     let ld2 = gpio::Output::new(p.PJ5, gpio::Level::High, gpio::Speed::Low);
 
@@ -178,14 +93,106 @@ async fn _main(spawner: Spawner) -> ! {
     let seeds = core::array::from_fn(|_| rng.next_u64());
 
     let blink = blink(ld1, ld2);
-    let echo = echo(
+    let stack = net_stack_setup(
         spawner, HOSTNAME, MAC_ADDR, seeds, p.ETH, p.PA1, p.PA2, p.PC1, p.PA7, p.PC4,
         p.PC5, p.PG13, p.PG14, p.PG11,
-    );
+    )
+    .await;
+    let echo = echo(stack);
 
     join(blink, echo).await.0
-    */
 }
+
+type Sdram = stm32_fmc::Sdram<
+    embassy_stm32::fmc::Fmc<'static, embassy_stm32::peripherals::FMC>,
+    stm32_fmc::devices::is42s32400f_6::Is42s32400f6,
+>;
+
+/// Safety: SIZE must be at most the SDRAM size in bytes
+unsafe fn sdram_init<const SIZE: usize>(sdram: Sdram) -> &'static mut [MaybeUninit<u32>] {
+    static SDRAM: StaticCell<Sdram> = StaticCell::new();
+    let sdram = SDRAM.init(sdram);
+
+    let ptr = sdram.init(&mut Delay);
+    let ptr = ptr.cast::<MaybeUninit<u32>>();
+    // Safety: pointee u32: Sized
+    let size = unsafe { core::mem::size_of_val_raw(ptr) };
+    let len = SIZE / size;
+    // Safety:
+    // - it is assumed that `embassy_stm32::fmc::Fmc::sdram_a13bits_d32bits_4banks_bank1`
+    //   returns a read/write valid pointer
+    // - the source ptr does not escape this scope
+    assert!(SIZE <= isize::MAX as usize);
+    assert!(ptr.wrapping_add(len) >= ptr);
+    unsafe { core::slice::from_raw_parts_mut(ptr, len) }
+}
+
+macro_rules! create_sdram {
+    ($peripherals:ident) => {
+        embassy_stm32::fmc::Fmc::sdram_a13bits_d32bits_4banks_bank1(
+            $peripherals.FMC,
+            $peripherals.PF0,
+            $peripherals.PF1,
+            $peripherals.PF2,
+            $peripherals.PF3,
+            $peripherals.PF4,
+            $peripherals.PF5,
+            $peripherals.PF12,
+            $peripherals.PF13,
+            $peripherals.PF14,
+            $peripherals.PF15,
+            $peripherals.PG0,
+            $peripherals.PG1,
+            $peripherals.PG2,
+            $peripherals.PG4,
+            $peripherals.PG5,
+            $peripherals.PD14,
+            $peripherals.PD15,
+            $peripherals.PD0,
+            $peripherals.PD1,
+            $peripherals.PE7,
+            $peripherals.PE8,
+            $peripherals.PE9,
+            $peripherals.PE10,
+            $peripherals.PE11,
+            $peripherals.PE12,
+            $peripherals.PE13,
+            $peripherals.PE14,
+            $peripherals.PE15,
+            $peripherals.PD8,
+            $peripherals.PD9,
+            $peripherals.PD10,
+            $peripherals.PH8,
+            $peripherals.PH9,
+            $peripherals.PH10,
+            $peripherals.PH11,
+            $peripherals.PH12,
+            $peripherals.PH13,
+            $peripherals.PH14,
+            $peripherals.PH15,
+            $peripherals.PI0,
+            $peripherals.PI1,
+            $peripherals.PI2,
+            $peripherals.PI3,
+            $peripherals.PI6,
+            $peripherals.PI7,
+            $peripherals.PI9,
+            $peripherals.PI10,
+            $peripherals.PE0,
+            $peripherals.PE1,
+            $peripherals.PI4,
+            $peripherals.PI5,
+            $peripherals.PH2,
+            $peripherals.PG8,
+            $peripherals.PG15,
+            $peripherals.PH3,
+            $peripherals.PF11,
+            $peripherals.PH5,
+            stm32_fmc::devices::is42s32400f_6::Is42s32400f6 {},
+        )
+    };
+}
+pub(crate) use create_sdram;
 
 async fn blink(ld1: gpio::Output<'_>, ld2: gpio::Output<'_>) -> ! {
     let mut ld1 = ld1;
@@ -213,7 +220,7 @@ async fn blink(ld1: gpio::Output<'_>, ld2: gpio::Output<'_>) -> ! {
 #[allow(clippy::upper_case_acronyms)]
 type ETH = embassy_stm32::peripherals::ETH;
 #[allow(clippy::too_many_arguments)]
-async fn echo(
+async fn net_stack_setup(
     spawner: Spawner,
     #[allow(unused)] hostname: impl AsRef<str>,
     mac_addr: [u8; 6],
@@ -228,7 +235,7 @@ async fn echo(
     tx_d0: impl Peripheral<P = impl embassy_stm32::eth::TXD0Pin<ETH>> + 'static,
     tx_d1: impl Peripheral<P = impl embassy_stm32::eth::TXD1Pin<ETH>> + 'static,
     tx_en: impl Peripheral<P = impl embassy_stm32::eth::TXEnPin<ETH>> + 'static,
-) -> ! {
+) -> embassy_net::Stack<'static> {
     use embassy_net::*;
     let net_cfg =
         // Config::dhcpv4(dhcp_config(hostname).unwrap() /*Default::default()*/);
@@ -263,13 +270,17 @@ async fn echo(
         mac_addr,
     );
 
-    let mut server_rx_buf = [0; 4096];
-    let mut server_tx_buf = [0; 4096];
-
     let (stack, runner) = embassy_net::new(ethernet, net_cfg, resources, seeds[0]);
 
     spawner.must_spawn(net_task(runner));
     stack.wait_config_up().await;
+
+    stack
+}
+
+async fn echo(stack: embassy_net::Stack<'_>) -> ! {
+    let mut server_rx_buf = [0; 4096];
+    let mut server_tx_buf = [0; 4096];
 
     let config = loop {
         if let Some(config) = stack.config_v4() {
@@ -281,10 +292,16 @@ async fn echo(
     let _addr = addr;
     DHCP_UP.signal(());
 
-    let mut server = tcp::TcpSocket::new(stack, &mut server_rx_buf, &mut server_tx_buf);
+    let mut server =
+        embassy_net::tcp::TcpSocket::new(stack, &mut server_rx_buf, &mut server_tx_buf);
     server.set_timeout(Some(Duration::from_secs(120)));
     let config_v4 = stack.config_v4();
     let _config_v4 = config_v4;
+
+    server.connect((Ipv4Address([192, 168, 2, 161]), 1234)).await.unwrap();
+    server.write_all(b"lorem ipsum\n").await.unwrap();
+    server.write_all(b"dolor sit amet\n").await.unwrap();
+    server.close();
 
     let mut server = async move || loop {
         if let Err(e) = server.accept(1234).await {
@@ -301,14 +318,7 @@ async fn echo(
                 | Ok(len) => len,
             };
             let buf = &buf[..len];
-
-            for n in buf {
-                fmt.write_fmt(format_args!("{:02x}", n))
-                    .expect("fmt buffer should fit entire formatted input");
-            }
-            fmt.write_str("\r\n")
-                .expect("fmt buffer should fit formatted input plus crlf");
-
+            writeln!(fmt, "{}", buf.len());
             if server.write_all(fmt.as_bytes()).await.is_err() {
                 break;
             }
