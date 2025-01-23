@@ -14,7 +14,10 @@ use core::str::FromStr;
 
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
+use embassy_futures::join::join3;
 use embassy_futures::yield_now;
+use embassy_net::tcp;
+use embassy_net::IpEndpoint;
 use embassy_net::Ipv4Address;
 use embassy_stm32::bind_interrupts;
 use embassy_stm32::eth::PacketQueue;
@@ -22,16 +25,19 @@ use embassy_stm32::gpio;
 use embassy_stm32::time::Hertz;
 use embassy_stm32::Peripheral;
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+use embassy_sync::channel;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::Delay;
 use embassy_time::Duration;
 use embassy_time::Timer;
+use embedded_hal_async::delay::DelayNs;
 use embedded_io_async::Write as AsyncWrite;
 use heapless::String;
 #[allow(unused_imports)]
 use panic_halt as _;
 use rand_core::RngCore;
+use smallstr::SmallString;
 use static_cell::ConstStaticCell;
 use static_cell::StaticCell;
 
@@ -92,14 +98,25 @@ async fn _main(spawner: Spawner) -> ! {
     let seeds = core::array::from_fn(|_| rng.next_u64());
 
     let blink = blink(ld1, ld2);
-    let stack = net_stack_setup(
-        spawner, HOSTNAME, MAC_ADDR, seeds, p.ETH, p.PA1, p.PA2, p.PC1, p.PA7, p.PC4,
-        p.PC5, p.PG13, p.PG14, p.PG11,
-    )
-    .await;
-    let echo = echo(stack);
 
-    join(blink, echo).await.0
+    let net = async {
+        let stack = net_stack_setup(
+            spawner, HOSTNAME, MAC_ADDR, seeds, p.ETH, p.PA1, p.PA2, p.PC1, p.PA7, p.PC4,
+            p.PC5, p.PG13, p.PG14, p.PG11,
+        )
+        .await;
+
+        static LOG_CHANNEL: LogChannel = LogChannel::new();
+        static LOG_UP: Signal<ThreadModeRawMutex, bool> = Signal::new();
+
+        let log_endpoint = (Ipv4Address([192, 168, 2, 161]), 1234);
+        let log = log(log_endpoint, LOG_CHANNEL.receiver(), &LOG_UP, stack);
+        let echo = echo(1234, LOG_CHANNEL.sender(), stack);
+        let cli = cli(4321, LOG_CHANNEL.sender(), stack);
+        join3(log, echo, cli)
+    };
+
+    join(blink, net).await.0
 }
 
 type Sdram = stm32_fmc::Sdram<
@@ -216,6 +233,106 @@ async fn blink(ld1: gpio::Output<'_>, ld2: gpio::Output<'_>) -> ! {
     }
 }
 
+const LOG_BUF_CAPACITY: usize = 16;
+type LogChannel = channel::Channel<ThreadModeRawMutex, LogString, LOG_BUF_CAPACITY>;
+type LogString = SmallString<[u8; 256]>;
+type LogTx<'ch> = channel::Sender<'ch, ThreadModeRawMutex, LogString, LOG_BUF_CAPACITY>;
+type LogRx<'ch> = channel::Receiver<'ch, ThreadModeRawMutex, LogString, LOG_BUF_CAPACITY>;
+
+async fn log(
+    endpoint: impl Into<embassy_net::IpEndpoint>,
+    messages: LogRx<'_>,
+    log_up: &Signal<ThreadModeRawMutex, bool>,
+    stack: embassy_net::Stack<'_>,
+) -> ! {
+    let mut rx_buf = [0; 128];
+    let mut tx_buf = [0; 2048];
+
+    DHCP_UP.wait().await;
+
+    let mut sock = tcp::TcpSocket::new(stack, &mut rx_buf, &mut tx_buf);
+    sock.set_keep_alive(Some(Duration::from_secs(10)));
+    sock.set_timeout(Some(Duration::from_secs(10)));
+
+    let endpoint = endpoint.into();
+    loop {
+        'connection: {
+            if sock.connect(endpoint).await.is_err() {
+                break 'connection;
+            }
+            log_up.signal(true);
+            loop {
+                let message = messages.receive().await;
+                if sock.write_all(message.as_bytes()).await.is_err() {
+                    log_up.signal(false);
+                    break 'connection;
+                }
+            }
+        }
+        sock.abort();
+        sock.flush().await;
+        Timer::after_secs(10).await;
+    }
+}
+
+async fn echo(port: u16, log: LogTx<'_>, stack: embassy_net::Stack<'_>) -> ! {
+    let mut rx_buf = [0; 4096];
+    let mut tx_buf = [0; 4096];
+
+    let mut server = tcp::TcpSocket::new(stack, &mut rx_buf, &mut tx_buf);
+    server.set_keep_alive(Some(Duration::from_secs(10)));
+    server.set_timeout(Some(Duration::from_secs(20)));
+    // let config_v4 = stack.config_v4();
+    // let _config_v4 = config_v4;
+
+    loop {
+        if let Err(e) = server.accept(port).await {
+            let _e = e;
+            Timer::after_secs(1).await;
+            continue;
+        }
+
+        let mut buf = [0; 512];
+        let mut fmt = String::<1026>::new();
+        loop {
+            let len = match server.read(&mut buf).await {
+                | Err(_) | Ok(0) => break,
+                | Ok(len) => len,
+            };
+            let buf = &buf[..len];
+            writeln!(fmt, "{}", buf.len());
+            if server.write_all(fmt.as_bytes()).await.is_err() {
+                break;
+            }
+            fmt.clear();
+        }
+        server.close();
+        let _ = server.flush().await;
+    }
+}
+
+async fn cli(port: u16, log: LogTx<'_>, stack: embassy_net::Stack<'_>) -> ! {
+    let mut rx_buf = [0; 4096];
+    let mut tx_buf = [0; 4096];
+
+    DHCP_UP.wait().await;
+    let mut server = tcp::TcpSocket::new(stack, &mut rx_buf, &mut tx_buf);
+    server.set_keep_alive(Some(Duration::from_secs(10)));
+    server.set_timeout(Some(Duration::from_secs(20)));
+
+    loop {
+        if let Err(_e) = server.accept(port).await {
+            Timer::after_secs(1).await;
+            continue;
+        }
+        let mut buf = [0; 512];
+
+        loop {
+            todo!()
+        }
+    }
+}
+
 #[allow(clippy::upper_case_acronyms)]
 type ETH = embassy_stm32::peripherals::ETH;
 #[allow(clippy::too_many_arguments)]
@@ -237,12 +354,12 @@ async fn net_stack_setup(
 ) -> embassy_net::Stack<'static> {
     use embassy_net::*;
     let net_cfg =
-        // Config::dhcpv4(dhcp_config(hostname).unwrap() /*Default::default()*/);
-    Config::ipv4_static(StaticConfigV4 {
-        address: Ipv4Cidr::new(Ipv4Address([192, 168, 2, 43]), 24),
-        gateway: None,
-        dns_servers: Default::default(),
-    });
+        Config::dhcpv4(dhcp_config(hostname).unwrap() /*Default::default()*/);
+    // Config::ipv4_static(StaticConfigV4 {
+    //     address: Ipv4Cidr::new(Ipv4Address([192, 168, 2, 43]), 24),
+    //     gateway: None,
+    //     dns_servers: Default::default(),
+    // });
 
     static PACKET_QUEUE: ConstStaticCell<PacketQueue<8, 8>> =
         ConstStaticCell::new(PacketQueue::new());
@@ -273,68 +390,15 @@ async fn net_stack_setup(
 
     spawner.must_spawn(net_task(runner));
     stack.wait_config_up().await;
-
-    stack
-}
-
-async fn echo(stack: embassy_net::Stack<'_>) -> ! {
-    let mut server_rx_buf = [0; 4096];
-    let mut server_tx_buf = [0; 4096];
-
     let config = loop {
         if let Some(config) = stack.config_v4() {
             break config;
         }
         yield_now().await;
     };
-    let addr = config.address.address();
-    let _addr = addr;
     DHCP_UP.signal(());
 
-    let mut server =
-        embassy_net::tcp::TcpSocket::new(stack, &mut server_rx_buf, &mut server_tx_buf);
-    server.set_keep_alive(Some(Duration::from_secs(10)));
-    server.set_timeout(Some(Duration::from_secs(20)));
-    let config_v4 = stack.config_v4();
-    let _config_v4 = config_v4;
-
-    // async block makes clippy explode
-    #[allow(clippy::redundant_closure_call)]
-    (async || {
-        server.connect((Ipv4Address([192, 168, 2, 161]), 1234)).await.map_err(|_| ())?;
-        server.write_all(b"lorem ipsum\n").await.map_err(|_| ())?;
-        server.write_all(b"dolor sit amet\n").await.map_err(|_| ())?;
-        server.close();
-        Ok::<_, ()>(())
-    })()
-    .await;
-
-    let mut server = async move || loop {
-        if let Err(e) = server.accept(1234).await {
-            let _e = e;
-            Timer::after_secs(1).await;
-            continue;
-        }
-
-        let mut buf = [0; 512];
-        let mut fmt = String::<1026>::new();
-        loop {
-            let len = match server.read(&mut buf).await {
-                | Err(_) | Ok(0) => break,
-                | Ok(len) => len,
-            };
-            let buf = &buf[..len];
-            writeln!(fmt, "{}", buf.len());
-            if server.write_all(fmt.as_bytes()).await.is_err() {
-                break;
-            }
-            fmt.clear();
-        }
-        server.close();
-        let _ = server.flush().await;
-    };
-
-    server().await
+    stack
 }
 
 // noinspection ALL
