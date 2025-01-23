@@ -1,7 +1,6 @@
 #![no_std]
 #![no_main]
 #![feature(impl_trait_in_assoc_type)]
-#![feature(async_closure)]
 #![feature(core_intrinsics)]
 #![feature(layout_for_ptr)]
 #![allow(internal_features)]
@@ -294,14 +293,21 @@ async fn echo(stack: embassy_net::Stack<'_>) -> ! {
 
     let mut server =
         embassy_net::tcp::TcpSocket::new(stack, &mut server_rx_buf, &mut server_tx_buf);
-    server.set_timeout(Some(Duration::from_secs(120)));
+    server.set_keep_alive(Some(Duration::from_secs(10)));
+    server.set_timeout(Some(Duration::from_secs(20)));
     let config_v4 = stack.config_v4();
     let _config_v4 = config_v4;
 
-    server.connect((Ipv4Address([192, 168, 2, 161]), 1234)).await.unwrap();
-    server.write_all(b"lorem ipsum\n").await.unwrap();
-    server.write_all(b"dolor sit amet\n").await.unwrap();
-    server.close();
+    // async block makes clippy explode
+    #[allow(clippy::redundant_closure_call)]
+    (async || {
+        server.connect((Ipv4Address([192, 168, 2, 161]), 1234)).await.map_err(|_| ())?;
+        server.write_all(b"lorem ipsum\n").await.map_err(|_| ())?;
+        server.write_all(b"dolor sit amet\n").await.map_err(|_| ())?;
+        server.close();
+        Ok::<_, ()>(())
+    })()
+    .await;
 
     let mut server = async move || loop {
         if let Err(e) = server.accept(1234).await {
