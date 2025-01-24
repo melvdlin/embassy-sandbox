@@ -6,6 +6,7 @@
 #![allow(internal_features)]
 #![allow(unused)]
 use core::array;
+use core::fmt::Display;
 use core::fmt::Write as FmtWrite;
 #[allow(unused)]
 use core::intrinsics::breakpoint;
@@ -17,8 +18,10 @@ use embassy_futures::join::join;
 use embassy_futures::join::join3;
 use embassy_futures::yield_now;
 use embassy_net::tcp;
+use embassy_net::tcp::TcpSocket;
 use embassy_net::IpEndpoint;
 use embassy_net::Ipv4Address;
+use embassy_sandbox::format_fallback;
 use embassy_sandbox::util::ByteSliceExt;
 use embassy_stm32::bind_interrupts;
 use embassy_stm32::eth::PacketQueue;
@@ -37,6 +40,7 @@ use embedded_io_async::Write as AsyncWrite;
 use getargs::Options;
 use heapless::format;
 use heapless::String;
+use heapless::Vec;
 #[allow(unused_imports)]
 use panic_halt as _;
 use rand_core::RngCore;
@@ -329,33 +333,97 @@ async fn cli(port: u16, log: LogTx<'_>, stack: embassy_net::Stack<'_>) -> ! {
             continue;
         }
 
-        let mut buf = [0; 512];
-        loop {
-            let len = match server.read(&mut buf).await {
-                | Err(e) => {
-                    log.send(format!("failed to read from connection: {e:?}\n").unwrap())
-                        .await;
-                    break;
-                }
-                | Ok(0) => {
-                    log.send(format!("connection closed!\n").unwrap()).await;
-                    break;
-                }
-                | Ok(len) => len,
-            };
-            let buf = &mut buf[..len];
-            let buf = buf.trim_ascii_mut();
-            let tokens = embedded_cli::token::inplace::Tokens::new_cli(buf);
-            let mut err = None;
-            let opts = Options::new(tokens.map(|res| match res {
-                | Ok(token) => token,
-                | Err(e) => {
-                    err = Some(e);
-                    b""
-                }
-            }));
-            todo!()
+        let result = handle_cli_connection(&mut server, log).await;
+        if let Err(e) = result {
+            log.send(format_fallback!("cli error: {}", e, "[...]")).await;
+            log.send(format!("cli connection closed!\n").unwrap()).await;
         }
+    }
+}
+
+async fn handle_cli_connection(
+    socket: &mut TcpSocket<'_>,
+    log: LogTx<'_>,
+) -> Result<(), CliError> {
+    let mut buf = [0; 512];
+    loop {
+        let len = match socket.read(&mut buf).await {
+            | Err(e) => {
+                break Err(CliError::Read(e));
+            }
+            | Ok(0) => {
+                log.send(format!("connection closed!\n").unwrap()).await;
+                break Ok(());
+            }
+            | Ok(len) => len,
+        };
+        let buf = &mut buf[..len].trim_ascii_mut();
+        let mut tokens = Vec::<&[u8], 16>::new();
+        for token in embedded_cli::token::inplace::Tokens::new_cli(buf) {
+            match token {
+                | Err(e) => socket
+                    .write_all(
+                        format_fallback!(64; "{}\n", e, "tokenisation error").as_bytes(),
+                    )
+                    .await
+                    .map_err(CliError::Write)?,
+                | Ok(token) => todo!(),
+            }
+        }
+        let opts = Options::new(tokens.into_iter());
+        todo!()
+    }
+}
+
+#[derive(Debug)]
+#[derive(Clone, Copy)]
+#[derive(PartialEq, Eq)]
+enum CliError {
+    Read(tcp::Error),
+    Write(tcp::Error),
+}
+
+impl Display for CliError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "CLI error: ")?;
+        match *self {
+            | CliError::Read(e) => {
+                write!(f, "failed to read from connection: {}", TcpErrorDisplay(e))
+            }
+            | CliError::Write(e) => {
+                write!(f, "failed to write to connection: {}", TcpErrorDisplay(e))
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+#[derive(Clone, Copy)]
+#[derive(PartialEq, Eq)]
+struct TcpErrorDisplay(tcp::Error);
+
+impl Display for TcpErrorDisplay {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "TCP error: {}",
+            match self.0 {
+                | tcp::Error::ConnectionReset => "connection reset",
+            }
+        )
+    }
+}
+
+impl core::error::Error for TcpErrorDisplay {}
+impl From<tcp::Error> for TcpErrorDisplay {
+    fn from(e: tcp::Error) -> Self {
+        Self(e)
+    }
+}
+
+impl From<TcpErrorDisplay> for tcp::Error {
+    fn from(wrapper: TcpErrorDisplay) -> Self {
+        wrapper.0
     }
 }
 
