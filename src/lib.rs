@@ -12,3 +12,5 @@ pub mod bitbang;
 pub mod flash;
 #[cfg(feature = "cross")]
 pub mod tftp;
+
+pub mod util;

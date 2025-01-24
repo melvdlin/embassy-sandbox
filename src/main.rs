@@ -19,6 +19,7 @@ use embassy_futures::yield_now;
 use embassy_net::tcp;
 use embassy_net::IpEndpoint;
 use embassy_net::Ipv4Address;
+use embassy_sandbox::util::ByteSliceExt;
 use embassy_stm32::bind_interrupts;
 use embassy_stm32::eth::PacketQueue;
 use embassy_stm32::gpio;
@@ -33,11 +34,12 @@ use embassy_time::Duration;
 use embassy_time::Timer;
 use embedded_hal_async::delay::DelayNs;
 use embedded_io_async::Write as AsyncWrite;
+use getargs::Options;
+use heapless::format;
 use heapless::String;
 #[allow(unused_imports)]
 use panic_halt as _;
 use rand_core::RngCore;
-use smallstr::SmallString;
 use static_cell::ConstStaticCell;
 use static_cell::StaticCell;
 
@@ -113,7 +115,7 @@ async fn _main(spawner: Spawner) -> ! {
         let log = log(log_endpoint, LOG_CHANNEL.receiver(), &LOG_UP, stack);
         let echo = echo(1234, LOG_CHANNEL.sender(), stack);
         let cli = cli(4321, LOG_CHANNEL.sender(), stack);
-        join3(log, echo, cli)
+        join3(log, echo, cli).await
     };
 
     join(blink, net).await.0
@@ -235,7 +237,7 @@ async fn blink(ld1: gpio::Output<'_>, ld2: gpio::Output<'_>) -> ! {
 
 const LOG_BUF_CAPACITY: usize = 16;
 type LogChannel = channel::Channel<ThreadModeRawMutex, LogString, LOG_BUF_CAPACITY>;
-type LogString = SmallString<[u8; 256]>;
+type LogString = String<256>;
 type LogTx<'ch> = channel::Sender<'ch, ThreadModeRawMutex, LogString, LOG_BUF_CAPACITY>;
 type LogRx<'ch> = channel::Receiver<'ch, ThreadModeRawMutex, LogString, LOG_BUF_CAPACITY>;
 
@@ -321,13 +323,37 @@ async fn cli(port: u16, log: LogTx<'_>, stack: embassy_net::Stack<'_>) -> ! {
     server.set_timeout(Some(Duration::from_secs(20)));
 
     loop {
-        if let Err(_e) = server.accept(port).await {
+        if let Err(e) = server.accept(port).await {
+            log.send(format!("failed to accept connection: {e:?}\n").unwrap()).await;
             Timer::after_secs(1).await;
             continue;
         }
-        let mut buf = [0; 512];
 
+        let mut buf = [0; 512];
         loop {
+            let len = match server.read(&mut buf).await {
+                | Err(e) => {
+                    log.send(format!("failed to read from connection: {e:?}\n").unwrap())
+                        .await;
+                    break;
+                }
+                | Ok(0) => {
+                    log.send(format!("connection closed!\n").unwrap()).await;
+                    break;
+                }
+                | Ok(len) => len,
+            };
+            let buf = &mut buf[..len];
+            let buf = buf.trim_ascii_mut();
+            let tokens = embedded_cli::token::inplace::Tokens::new_cli(buf);
+            let mut err = None;
+            let opts = Options::new(tokens.map(|res| match res {
+                | Ok(token) => token,
+                | Err(e) => {
+                    err = Some(e);
+                    b""
+                }
+            }));
             todo!()
         }
     }

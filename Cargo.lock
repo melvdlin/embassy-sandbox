@@ -282,8 +282,10 @@ dependencies = [
  "embassy-stm32",
  "embassy-sync",
  "embassy-time",
+ "embedded-cli",
  "embedded-hal-async",
  "embedded-io-async",
+ "getargs",
  "heapless",
  "itertools",
  "memchr",
@@ -291,7 +293,6 @@ dependencies = [
  "num-traits",
  "panic-halt",
  "rand_core",
- "smallstr",
  "smoltcp",
  "sntpc",
  "static_cell",
@@ -412,6 +413,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-cli"
+version = "0.1.0"
+source = "git+https://github.com/melvdlin/embedded-cli.git#0c3fbf9aeaddbaecd51e4f7434e3f096e9f87858"
+dependencies = [
+ "memchr",
+ "nom",
+]
+
+[[package]]
 name = "embedded-hal"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -526,6 +536,12 @@ dependencies = [
  "pin-project-lite",
  "pin-utils",
 ]
+
+[[package]]
+name = "getargs"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "084c6b182b01dec54ff12986b9cc8859a9b0d92b074f878c382a4481a070e66e"
 
 [[package]]
 name = "hash32"
@@ -729,21 +745,6 @@ name = "semver-parser"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
-
-[[package]]
-name = "smallstr"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63b1aefdf380735ff8ded0b15f31aab05daf1f70216c01c02a12926badd1df9d"
-dependencies = [
- "smallvec",
-]
-
-[[package]]
-name = "smallvec"
-version = "1.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c5e1a9a646d36c3599cd173a41282daf47c44583ad367b8e6837255952e5c67"
 
 [[package]]
 name = "smoltcp"
