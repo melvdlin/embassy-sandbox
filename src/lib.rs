@@ -14,3 +14,5 @@ pub mod flash;
 pub mod tftp;
 
 pub mod util;
+
+pub mod log;

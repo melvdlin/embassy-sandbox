@@ -54,15 +54,3 @@ mod tests {
         assert_eq!(s.trim_ascii_end_mut(), b"");
     }
 }
-
-#[macro_export]
-macro_rules! format_fallback {
-    ($fmt:literal, $primary:expr, $fallback:expr $(; $($rest:tt)*)?) => {
-        ::heapless::format!($fmt, $primary, $($rest)*)
-            .unwrap_or_else(|_| ::heapless::format!($fmt, $primary, $($rest)*))
-    };
-    ($max:expr; $fmt:literal, $primary:expr, $fallback:expr $(; $($rest:tt)*)?) => {
-        ::heapless::format!($max; $fmt, $primary, $($rest)*)
-            .unwrap_or_else(|_| ::heapless::format!($max; $fmt, $primary, $($rest)*))
-    };
-}

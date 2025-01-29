@@ -21,13 +21,14 @@ use embassy_net::tcp;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::IpEndpoint;
 use embassy_net::Ipv4Address;
-use embassy_sandbox::format_fallback;
+use embassy_sandbox::log;
 use embassy_sandbox::util::ByteSliceExt;
 use embassy_stm32::bind_interrupts;
 use embassy_stm32::eth::PacketQueue;
 use embassy_stm32::gpio;
 use embassy_stm32::time::Hertz;
 use embassy_stm32::Peripheral;
+use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel;
 use embassy_sync::mutex::Mutex;
@@ -44,6 +45,7 @@ use heapless::Vec;
 #[allow(unused_imports)]
 use panic_halt as _;
 use rand_core::RngCore;
+use scuffed_write::async_writeln;
 use static_cell::ConstStaticCell;
 use static_cell::StaticCell;
 
@@ -112,13 +114,13 @@ async fn _main(spawner: Spawner) -> ! {
         )
         .await;
 
-        static LOG_CHANNEL: LogChannel = LogChannel::new();
+        static LOG_CHANNEL: log::Channel<ThreadModeRawMutex, 1024> = log::Channel::new();
         static LOG_UP: Signal<ThreadModeRawMutex, bool> = Signal::new();
 
         let log_endpoint = (Ipv4Address([192, 168, 2, 161]), 1234);
-        let log = log(log_endpoint, LOG_CHANNEL.receiver(), &LOG_UP, stack);
-        let echo = echo(1234, LOG_CHANNEL.sender(), stack);
-        let cli = cli(4321, LOG_CHANNEL.sender(), stack);
+        let log = log::log_task(log_endpoint, &DHCP_UP, &LOG_CHANNEL, &LOG_UP, stack);
+        let echo = echo(1234, &LOG_CHANNEL, stack);
+        let cli = cli(4321, &LOG_CHANNEL, stack);
         join3(log, echo, cli).await
     };
 
@@ -239,49 +241,14 @@ async fn blink(ld1: gpio::Output<'_>, ld2: gpio::Output<'_>) -> ! {
     }
 }
 
-const LOG_BUF_CAPACITY: usize = 16;
-type LogChannel = channel::Channel<ThreadModeRawMutex, LogString, LOG_BUF_CAPACITY>;
-type LogString = String<256>;
-type LogTx<'ch> = channel::Sender<'ch, ThreadModeRawMutex, LogString, LOG_BUF_CAPACITY>;
-type LogRx<'ch> = channel::Receiver<'ch, ThreadModeRawMutex, LogString, LOG_BUF_CAPACITY>;
-
-async fn log(
-    endpoint: impl Into<embassy_net::IpEndpoint>,
-    messages: LogRx<'_>,
-    log_up: &Signal<ThreadModeRawMutex, bool>,
+async fn echo<M, const N: usize>(
+    port: u16,
+    log: &log::Channel<M, N>,
     stack: embassy_net::Stack<'_>,
-) -> ! {
-    let mut rx_buf = [0; 128];
-    let mut tx_buf = [0; 2048];
-
-    DHCP_UP.wait().await;
-
-    let mut sock = tcp::TcpSocket::new(stack, &mut rx_buf, &mut tx_buf);
-    sock.set_keep_alive(Some(Duration::from_secs(10)));
-    sock.set_timeout(Some(Duration::from_secs(10)));
-
-    let endpoint = endpoint.into();
-    loop {
-        'connection: {
-            if sock.connect(endpoint).await.is_err() {
-                break 'connection;
-            }
-            log_up.signal(true);
-            loop {
-                let message = messages.receive().await;
-                if sock.write_all(message.as_bytes()).await.is_err() {
-                    log_up.signal(false);
-                    break 'connection;
-                }
-            }
-        }
-        sock.abort();
-        sock.flush().await;
-        Timer::after_secs(10).await;
-    }
-}
-
-async fn echo(port: u16, log: LogTx<'_>, stack: embassy_net::Stack<'_>) -> ! {
+) -> !
+where
+    M: RawMutex,
+{
     let mut rx_buf = [0; 4096];
     let mut tx_buf = [0; 4096];
 
@@ -317,7 +284,14 @@ async fn echo(port: u16, log: LogTx<'_>, stack: embassy_net::Stack<'_>) -> ! {
     }
 }
 
-async fn cli(port: u16, log: LogTx<'_>, stack: embassy_net::Stack<'_>) -> ! {
+async fn cli<M, const N: usize>(
+    port: u16,
+    log: &log::Channel<M, N>,
+    stack: embassy_net::Stack<'_>,
+) -> !
+where
+    M: RawMutex,
+{
     let mut rx_buf = [0; 4096];
     let mut tx_buf = [0; 4096];
 
@@ -328,23 +302,30 @@ async fn cli(port: u16, log: LogTx<'_>, stack: embassy_net::Stack<'_>) -> ! {
 
     loop {
         if let Err(e) = server.accept(port).await {
-            log.send(format!("failed to accept connection: {e:?}\n").unwrap()).await;
+            let Ok(()) =
+                async_writeln!(log.writer().await, "failed to accept connection: {e:?}")
+                    .await;
             Timer::after_secs(1).await;
             continue;
         }
 
         let result = handle_cli_connection(&mut server, log).await;
         if let Err(e) = result {
-            log.send(format_fallback!("cli error: {}", e, "[...]")).await;
-            log.send(format!("cli connection closed!\n").unwrap()).await;
+            let mut log_writer = log.writer().await;
+            let Ok(()) = async_writeln!(log_writer, "cli error: {}", e).await;
+            let Ok(()) = async_writeln!(log_writer, "cli connection closed!").await;
+            drop(log_writer)
         }
     }
 }
 
-async fn handle_cli_connection(
+async fn handle_cli_connection<M, const N: usize>(
     socket: &mut TcpSocket<'_>,
-    log: LogTx<'_>,
-) -> Result<(), CliError> {
+    log: &log::Channel<M, N>,
+) -> Result<(), CliError>
+where
+    M: RawMutex,
+{
     let mut buf = [0; 512];
     loop {
         let len = match socket.read(&mut buf).await {
@@ -352,7 +333,8 @@ async fn handle_cli_connection(
                 break Err(CliError::Read(e));
             }
             | Ok(0) => {
-                log.send(format!("connection closed!\n").unwrap()).await;
+                let Ok(()) =
+                    async_writeln!(log.writer().await, "connection closed!").await;
                 break Ok(());
             }
             | Ok(len) => len,
@@ -361,12 +343,9 @@ async fn handle_cli_connection(
         let mut tokens = Vec::<&[u8], 16>::new();
         for token in embedded_cli::token::inplace::Tokens::new_cli(buf) {
             match token {
-                | Err(e) => socket
-                    .write_all(
-                        format_fallback!(64; "{}\n", e, "tokenisation error").as_bytes(),
-                    )
-                    .await
-                    .map_err(CliError::Write)?,
+                | Err(e) => {
+                    async_writeln!(socket, "{e}").await.map_err(CliError::Write)?
+                }
                 | Ok(token) => todo!(),
             }
         }
