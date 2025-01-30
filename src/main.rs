@@ -21,6 +21,7 @@ use embassy_net::tcp;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::IpEndpoint;
 use embassy_net::Ipv4Address;
+use embassy_sandbox::cli;
 use embassy_sandbox::log;
 use embassy_sandbox::util::ByteSliceExt;
 use embassy_stm32::bind_interrupts;
@@ -120,7 +121,7 @@ async fn _main(spawner: Spawner) -> ! {
         let log_endpoint = (Ipv4Address([192, 168, 2, 161]), 1234);
         let log = log::log_task(log_endpoint, &DHCP_UP, &LOG_CHANNEL, &LOG_UP, stack);
         let echo = echo(1234, &LOG_CHANNEL, stack);
-        let cli = cli(4321, &LOG_CHANNEL, stack);
+        let cli = cli::cli_task(4321, &LOG_CHANNEL, &DHCP_UP, stack);
         join3(log, echo, cli).await
     };
 
@@ -281,128 +282,6 @@ where
         }
         server.close();
         let _ = server.flush().await;
-    }
-}
-
-async fn cli<M, const N: usize>(
-    port: u16,
-    log: &log::Channel<M, N>,
-    stack: embassy_net::Stack<'_>,
-) -> !
-where
-    M: RawMutex,
-{
-    let mut rx_buf = [0; 4096];
-    let mut tx_buf = [0; 4096];
-
-    DHCP_UP.wait().await;
-    let mut server = tcp::TcpSocket::new(stack, &mut rx_buf, &mut tx_buf);
-    server.set_keep_alive(Some(Duration::from_secs(10)));
-    server.set_timeout(Some(Duration::from_secs(20)));
-
-    loop {
-        if let Err(e) = server.accept(port).await {
-            let Ok(()) =
-                async_writeln!(log.writer().await, "failed to accept connection: {e:?}")
-                    .await;
-            Timer::after_secs(1).await;
-            continue;
-        }
-
-        let result = handle_cli_connection(&mut server, log).await;
-        if let Err(e) = result {
-            let mut log_writer = log.writer().await;
-            let Ok(()) = async_writeln!(log_writer, "cli error: {}", e).await;
-            let Ok(()) = async_writeln!(log_writer, "cli connection closed!").await;
-            drop(log_writer)
-        }
-    }
-}
-
-async fn handle_cli_connection<M, const N: usize>(
-    socket: &mut TcpSocket<'_>,
-    log: &log::Channel<M, N>,
-) -> Result<(), CliError>
-where
-    M: RawMutex,
-{
-    let mut buf = [0; 512];
-    loop {
-        let len = match socket.read(&mut buf).await {
-            | Err(e) => {
-                break Err(CliError::Read(e));
-            }
-            | Ok(0) => {
-                let Ok(()) =
-                    async_writeln!(log.writer().await, "connection closed!").await;
-                break Ok(());
-            }
-            | Ok(len) => len,
-        };
-        let buf = &mut buf[..len].trim_ascii_mut();
-        let mut tokens = Vec::<&[u8], 16>::new();
-        for token in embedded_cli::token::inplace::Tokens::new_cli(buf) {
-            match token {
-                | Err(e) => {
-                    async_writeln!(socket, "{e}").await.map_err(CliError::Write)?
-                }
-                | Ok(token) => todo!(),
-            }
-        }
-        let opts = Options::new(tokens.into_iter());
-        todo!()
-    }
-}
-
-#[derive(Debug)]
-#[derive(Clone, Copy)]
-#[derive(PartialEq, Eq)]
-enum CliError {
-    Read(tcp::Error),
-    Write(tcp::Error),
-}
-
-impl Display for CliError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "CLI error: ")?;
-        match *self {
-            | CliError::Read(e) => {
-                write!(f, "failed to read from connection: {}", TcpErrorDisplay(e))
-            }
-            | CliError::Write(e) => {
-                write!(f, "failed to write to connection: {}", TcpErrorDisplay(e))
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-#[derive(Clone, Copy)]
-#[derive(PartialEq, Eq)]
-struct TcpErrorDisplay(tcp::Error);
-
-impl Display for TcpErrorDisplay {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "TCP error: {}",
-            match self.0 {
-                | tcp::Error::ConnectionReset => "connection reset",
-            }
-        )
-    }
-}
-
-impl core::error::Error for TcpErrorDisplay {}
-impl From<tcp::Error> for TcpErrorDisplay {
-    fn from(e: tcp::Error) -> Self {
-        Self(e)
-    }
-}
-
-impl From<TcpErrorDisplay> for tcp::Error {
-    fn from(wrapper: TcpErrorDisplay) -> Self {
-        wrapper.0
     }
 }
 

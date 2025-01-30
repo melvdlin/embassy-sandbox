@@ -15,4 +15,5 @@ pub mod tftp;
 
 pub mod util;
 
+pub mod cli;
 pub mod log;
