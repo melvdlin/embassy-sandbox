@@ -10,6 +10,8 @@ use embassy_sync::signal::Signal;
 use embassy_time::Duration;
 use embassy_time::Timer;
 use embedded_cli::token::TokenizeError;
+use getargs::Arg;
+use getargs::Argument;
 use getargs::Options;
 use heapless::Vec;
 use scuffed_write::async_writeln;
@@ -54,12 +56,12 @@ async fn handle_cli_connection<M: RawMutex, const N: usize>(
     socket: &mut TcpSocket<'_>,
     stack: NetStack<'_>,
     log: &log::Channel<M, N>,
-) -> Result<(), CliError> {
+) -> Result<(), SessionError> {
     let mut buf = [0; 512];
 
     // REPL
     loop {
-        let len = socket.read(&mut buf).await.map_err(CliError::Read)?;
+        let len = socket.read(&mut buf).await.map_err(SessionError::Read)?;
         if len == 0 {
             break;
         }
@@ -72,19 +74,19 @@ async fn handle_cli_connection<M: RawMutex, const N: usize>(
 #[derive(Debug)]
 #[derive(Clone, Copy)]
 #[derive(PartialEq, Eq)]
-enum CliError {
+enum SessionError {
     Read(tcp::Error),
     Write(tcp::Error),
 }
 
-impl Display for CliError {
+impl Display for SessionError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "CLI error: ")?;
+        write!(f, "session error: ")?;
         match *self {
-            | CliError::Read(e) => {
+            | SessionError::Read(e) => {
                 write!(f, "failed to read from connection: {}", TcpErrorDisplay(e))
             }
-            | CliError::Write(e) => {
+            | SessionError::Write(e) => {
                 write!(f, "failed to write to connection: {}", TcpErrorDisplay(e))
             }
         }
@@ -126,7 +128,7 @@ async fn evaluate<M: RawMutex, const N: usize>(
     socket: &mut TcpSocket<'_>,
     stack: NetStack<'_>,
     log: &log::Channel<M, N>,
-) -> Result<(), CliError> {
+) -> Result<(), SessionError> {
     let buf = &mut input.trim_ascii_mut();
     let tokens =
         match Result::<Result<Vec<&str, 16>, Utf8Error>, TokenizeError>::from_iter(
@@ -135,12 +137,12 @@ async fn evaluate<M: RawMutex, const N: usize>(
         ) {
             // tokenize error
             | Err(e) => {
-                async_writeln!(socket, "{e}").await.map_err(CliError::Write)?;
+                async_writeln!(socket, "{e}").await.map_err(SessionError::Write)?;
                 return Ok(());
             }
             // utf8 error
             | Ok(Err(e)) => {
-                async_writeln!(socket, "{e}").await.map_err(CliError::Write)?;
+                async_writeln!(socket, "{e}").await.map_err(SessionError::Write)?;
                 return Ok(());
             }
             | Ok(Ok(tokens)) => tokens,
@@ -151,10 +153,17 @@ async fn evaluate<M: RawMutex, const N: usize>(
         return Ok(());
     };
 
-    Ok(match Command::try_from_str(command) {
-        | Err(e) => async_writeln!(socket, "{e}").await.map_err(CliError::Write),
+    let cmd_result = match Command::try_from_str(command) {
+        | Err(e) => async_writeln!(socket, "{e}")
+            .await
+            .map_err(SessionError::Write)
+            .map(|_| Ok(())),
         | Ok(cmd) => cmd.run(opts, socket, stack, log).await,
-    }?)
+    }?;
+    if let Err(e) = cmd_result {
+        async_writeln!(socket, "{e}").await.map_err(SessionError::Write)?
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -166,11 +175,11 @@ pub enum Command {
 }
 
 impl Command {
-    pub fn try_from_str(s: &str) -> Result<Self, UnknownCommandError> {
+    pub fn try_from_str(s: &str) -> Result<Self, CliError<&str>> {
         Ok(if s.eq_ignore_ascii_case("download") {
             Self::Download
         } else {
-            return Err(UnknownCommandError);
+            return Err(CliError::UnknownCommand(s));
         })
     }
 
@@ -180,7 +189,7 @@ impl Command {
         sock: &mut TcpSocket<'_>,
         stack: NetStack<'_>,
         log: &log::Channel<M, N>,
-    ) -> Result<(), CliError>
+    ) -> Result<Result<(), CliError<&'a str>>, SessionError>
     where
         I: Iterator<Item = &'a str>,
         M: RawMutex,
@@ -194,20 +203,53 @@ impl Command {
 #[derive(Debug)]
 #[derive(Clone, Copy)]
 #[derive(PartialEq, Eq)]
-#[derive(Hash)]
-pub struct UnknownCommandError;
+pub enum CliError<A: Argument> {
+    Tokenize(TokenizeError),
+    UnknownCommand(A),
+    ArgValue(getargs::Error<A>),
+    UnknownArg(getargs::Arg<A>),
+    MissingArg(getargs::Arg<A>),
+}
 
-impl Display for UnknownCommandError {
+impl<A> Display for CliError<A>
+where
+    A: Display,
+    A: Argument,
+    A::ShortOpt: Display,
+{
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "unknown command")
+        write!(f, "CLI error: ")?;
+        match *self {
+            | Self::Tokenize(e) => write!(f, "{e}"),
+            | Self::UnknownCommand(cmd) => write!(f, "unknown command: {cmd}"),
+            | Self::ArgValue(e) => write!(f, "{e}"),
+            | Self::UnknownArg(arg) => write!(f, "unknown arg: {arg}"),
+            | Self::MissingArg(arg) => write!(f, "missing arg: {arg}"),
+        }
     }
 }
 
-impl Error for UnknownCommandError {}
+impl<A> Error for CliError<A>
+where
+    A: Display,
+    A: Argument,
+    A::ShortOpt: Display,
+{
+}
+
+impl<A> From<getargs::Error<A>> for CliError<A>
+where
+    A: Argument,
+{
+    fn from(value: getargs::Error<A>) -> Self {
+        Self::ArgValue(value)
+    }
+}
 
 mod command {
     use embassy_net::tcp::TcpSocket;
     use embassy_net::Stack as NetStack;
+    use getargs::Arg;
     use getargs::Options;
 
     use super::*;
@@ -218,11 +260,42 @@ mod command {
         sock: &mut TcpSocket<'_>,
         stack: NetStack<'_>,
         log: &log::Channel<M, N>,
-    ) -> Result<(), CliError>
+    ) -> Result<Result<(), CliError<&'a str>>, SessionError>
     where
         I: Iterator<Item = &'a str>,
         M: RawMutex,
     {
+        let host = match args.next_arg() {
+            | Err(e) => return Ok(Err(CliError::ArgValue(e))),
+            | Ok(None) => return Ok(Err(CliError::MissingArg(Arg::Positional("host")))),
+            | Ok(Some(arg)) => match arg {
+                | Arg::Short(_) | Arg::Long(_) => {
+                    return Ok(Err(CliError::UnknownArg(arg)))
+                }
+                | Arg::Positional(host) => host,
+            },
+        };
+
+        let filename = match args.next_arg() {
+            | Err(e) => return Ok(Err(CliError::ArgValue(e))),
+            | Ok(None) => {
+                return Ok(Err(CliError::MissingArg(Arg::Positional("filename"))))
+            }
+            | Ok(Some(arg)) => match arg {
+                | Arg::Short(_) | Arg::Long(_) => {
+                    return Ok(Err(CliError::UnknownArg(arg)))
+                }
+                | Arg::Positional(filename) => filename,
+            },
+        };
+
+        match args.next_arg() {
+            | Err(e) => return Ok(Err(CliError::ArgValue(e))),
+            | Ok(Some(arg)) => return Ok(Err(CliError::UnknownArg(arg))),
+            | Ok(None) => {}
+        }
+
+        // todo: rework return type; nested Results are rather unergonomic
         todo!()
     }
 }
