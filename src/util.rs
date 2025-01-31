@@ -6,19 +6,14 @@ pub trait ByteSliceExt {
 
 impl ByteSliceExt for [u8] {
     fn trim_ascii_start_mut(&mut self) -> &mut Self {
-        let start =
-            self.iter().position(|c| !c.is_ascii_whitespace()).unwrap_or(self.len());
+        let len = self.trim_ascii_start();
+        let start = self.len() - len;
         &mut self[start..]
     }
 
     fn trim_ascii_end_mut(&mut self) -> &mut Self {
-        let end = self.len()
-            - self
-                .iter()
-                .rev()
-                .position(|c| !c.is_ascii_whitespace())
-                .unwrap_or(self.len());
-        &mut self[..end]
+        let len = self.trim_ascii_end();
+        &mut self[..len]
     }
 
     fn trim_ascii_mut(&mut self) -> &mut Self {
