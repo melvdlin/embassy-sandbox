@@ -103,3 +103,9 @@ embassy-time = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b
 # embassy-stm32 = { path = "../embassy/embassy-stm32" }
 # embassy-sync = { path = "../embassy/embassy-sync" }
 # embassy-time = { path = "../embassy/embassy-time" }
+
+[lints.rust]
+unused_must_use = "deny"
+
+[lints.clippy]
+try_err = "warn"
