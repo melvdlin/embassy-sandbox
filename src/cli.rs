@@ -1,4 +1,6 @@
+use core::convert::identity as type_hint;
 use core::error::Error;
+use core::fmt::Debug;
 use core::fmt::Display;
 use core::str::Utf8Error;
 
@@ -93,6 +95,8 @@ impl Display for SessionError {
     }
 }
 
+impl Error for SessionError {}
+
 #[derive(Debug)]
 #[derive(Clone, Copy)]
 #[derive(PartialEq, Eq)]
@@ -157,29 +161,35 @@ async fn evaluate<M: RawMutex, const N: usize>(
         | Err(e) => async_writeln!(socket, "{e}")
             .await
             .map_err(SessionError::Write)
-            .map(|_| Ok(())),
+            .map_err(CliError::from),
         | Ok(cmd) => cmd.run(opts, socket, stack, log).await,
-    }?;
-    if let Err(e) = cmd_result {
-        async_writeln!(socket, "{e}").await.map_err(SessionError::Write)?
+    };
+    match cmd_result {
+        | Err(CliError::Session(e)) => Err(e),
+        | Err(CliError::Parse(e)) => {
+            async_writeln!(socket, "{e}").await.map_err(SessionError::Write)
+        }
+        | Err(CliError::Other(e)) => {
+            async_writeln!(socket, "{e}").await.map_err(SessionError::Write)
+        }
+        | Ok(()) => Ok(()),
     }
-    Ok(())
 }
 
 #[derive(Debug)]
 #[derive(Clone, Copy)]
 #[derive(PartialEq, Eq)]
 #[derive(Hash)]
-pub enum Command {
+enum Command {
     Download,
 }
 
 impl Command {
-    pub fn try_from_str(s: &str) -> Result<Self, CliError<&str>> {
+    pub fn try_from_str(s: &str) -> Result<Self, ParseError<&str>> {
         Ok(if s.eq_ignore_ascii_case("download") {
             Self::Download
         } else {
-            return Err(CliError::UnknownCommand(s));
+            return Err(ParseError::UnknownCommand(s));
         })
     }
 
@@ -189,7 +199,7 @@ impl Command {
         sock: &mut TcpSocket<'_>,
         stack: NetStack<'_>,
         log: &log::Channel<M, N>,
-    ) -> Result<Result<(), CliError<&'a str>>, SessionError>
+    ) -> Result<(), CliError<&'a str>>
     where
         I: Iterator<Item = &'a str>,
         M: RawMutex,
@@ -200,15 +210,21 @@ impl Command {
     }
 }
 
-#[derive(Debug)]
 #[derive(Clone, Copy)]
-#[derive(PartialEq, Eq)]
-pub enum CliError<A: Argument> {
-    Tokenize(TokenizeError),
-    UnknownCommand(A),
-    ArgValue(getargs::Error<A>),
-    UnknownArg(getargs::Arg<A>),
-    MissingArg(getargs::Arg<A>),
+enum CliError<A: Argument> {
+    Session(SessionError),
+    Parse(ParseError<A>),
+    Other(&'static dyn Display),
+}
+
+impl<A: Argument> Debug for CliError<A> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            | Self::Session(e) => f.debug_tuple("Session").field(e).finish(),
+            | Self::Parse(e) => f.debug_tuple("Parse").field(e).finish(),
+            | Self::Other(e) => f.debug_tuple("Other").field(&(e as *const _)).finish(),
+        }
+    }
 }
 
 impl<A> Display for CliError<A>
@@ -218,14 +234,15 @@ where
     A::ShortOpt: Display,
 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "CLI error: ")?;
-        match *self {
-            | Self::Tokenize(e) => write!(f, "{e}"),
-            | Self::UnknownCommand(cmd) => write!(f, "unknown command: {cmd}"),
-            | Self::ArgValue(e) => write!(f, "{e}"),
-            | Self::UnknownArg(arg) => write!(f, "unknown arg: {arg}"),
-            | Self::MissingArg(arg) => write!(f, "missing arg: {arg}"),
-        }
+        write!(
+            f,
+            "CLI error: {}",
+            type_hint::<&dyn Display>(match self {
+                | CliError::Session(e) => e,
+                | CliError::Parse(e) => e,
+                | CliError::Other(e) => e,
+            })
+        )
     }
 }
 
@@ -237,12 +254,69 @@ where
 {
 }
 
-impl<A> From<getargs::Error<A>> for CliError<A>
+impl<A: Argument> From<SessionError> for CliError<A> {
+    fn from(e: SessionError) -> Self {
+        Self::Session(e)
+    }
+}
+
+impl<A: Argument> From<ParseError<A>> for CliError<A> {
+    fn from(e: ParseError<A>) -> Self {
+        Self::Parse(e)
+    }
+}
+
+#[derive(Debug)]
+#[derive(Clone, Copy)]
+#[derive(PartialEq, Eq)]
+enum ParseError<A: Argument> {
+    Tokenize(TokenizeError),
+    UnknownCommand(A),
+    ValueSupplied(getargs::Error<A>),
+    ValueParse(getargs::Arg<A>, A, Option<A>),
+    UnknownArg(getargs::Arg<A>),
+    MissingArg(getargs::Arg<A>),
+}
+
+impl<A> Display for ParseError<A>
+where
+    A: Display,
+    A: Argument,
+    A::ShortOpt: Display,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "parse error: ")?;
+        match *self {
+            | Self::Tokenize(e) => write!(f, "{e}"),
+            | Self::UnknownCommand(cmd) => write!(f, "unknown command: {cmd}"),
+            | Self::ValueSupplied(e) => write!(f, "{e}"),
+            | Self::ValueParse(arg, value, format) => {
+                write!(f, "unable to parse value supplied to {arg}: {value}")?;
+                if let Some(format) = format {
+                    write!(f, " (expected: {format})")?;
+                }
+                Ok(())
+            }
+            | Self::UnknownArg(arg) => write!(f, "unknown arg: {arg}"),
+            | Self::MissingArg(arg) => write!(f, "missing arg: {arg}"),
+        }
+    }
+}
+
+impl<A> Error for ParseError<A>
+where
+    A: Display,
+    A: Argument,
+    A::ShortOpt: Display,
+{
+}
+
+impl<A> From<getargs::Error<A>> for ParseError<A>
 where
     A: Argument,
 {
     fn from(value: getargs::Error<A>) -> Self {
-        Self::ArgValue(value)
+        Self::ValueSupplied(value)
     }
 }
 
@@ -260,42 +334,40 @@ mod command {
         sock: &mut TcpSocket<'_>,
         stack: NetStack<'_>,
         log: &log::Channel<M, N>,
-    ) -> Result<Result<(), CliError<&'a str>>, SessionError>
+    ) -> Result<(), CliError<&'a str>>
     where
         I: Iterator<Item = &'a str>,
         M: RawMutex,
     {
-        let host = match args.next_arg() {
-            | Err(e) => return Ok(Err(CliError::ArgValue(e))),
-            | Ok(None) => return Ok(Err(CliError::MissingArg(Arg::Positional("host")))),
-            | Ok(Some(arg)) => match arg {
-                | Arg::Short(_) | Arg::Long(_) => {
-                    return Ok(Err(CliError::UnknownArg(arg)))
-                }
-                | Arg::Positional(host) => host,
-            },
-        };
+        let arg = args
+            .next_arg()
+            .map_err(ParseError::ValueSupplied)?
+            .ok_or(ParseError::MissingArg(Arg::Positional("host")))?;
+        let host = arg.positional().ok_or(ParseError::UnknownArg(arg))?;
 
-        let filename = match args.next_arg() {
-            | Err(e) => return Ok(Err(CliError::ArgValue(e))),
-            | Ok(None) => {
-                return Ok(Err(CliError::MissingArg(Arg::Positional("filename"))))
-            }
-            | Ok(Some(arg)) => match arg {
-                | Arg::Short(_) | Arg::Long(_) => {
-                    return Ok(Err(CliError::UnknownArg(arg)))
-                }
-                | Arg::Positional(filename) => filename,
-            },
-        };
+        let port = args
+            .next_arg()
+            .map_err(ParseError::ValueSupplied)?
+            .ok_or(ParseError::MissingArg(Arg::Positional("port")))?;
+        let port = arg.positional().ok_or(ParseError::UnknownArg(port))?;
+        let port = port.parse::<u16>().map_err(|_| {
+            ParseError::ValueParse(
+                Arg::Positional("port"),
+                port,
+                Some("an integer between 0 and 65535 (inclusive)"),
+            )
+        })?;
 
-        match args.next_arg() {
-            | Err(e) => return Ok(Err(CliError::ArgValue(e))),
-            | Ok(Some(arg)) => return Ok(Err(CliError::UnknownArg(arg))),
-            | Ok(None) => {}
+        let arg = args
+            .next_arg()
+            .map_err(ParseError::ValueSupplied)?
+            .ok_or(ParseError::MissingArg(Arg::Positional("filename")))?;
+        let filename = arg.positional().ok_or(ParseError::UnknownArg(arg))?;
+
+        if let Some(arg) = args.next_arg().map_err(ParseError::from)? {
+            return Err(ParseError::UnknownArg(arg).into());
         }
 
-        // todo: rework return type; nested Results are rather unergonomic
         todo!()
     }
 }
