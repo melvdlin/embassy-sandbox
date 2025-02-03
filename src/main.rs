@@ -63,7 +63,7 @@ bind_interrupts!(struct Irqs {
 type Device = embassy_stm32::eth::Ethernet<
     'static,
     embassy_stm32::peripherals::ETH,
-    embassy_stm32::eth::generic_smi::GenericSMI,
+    embassy_stm32::eth::GenericPhy,
 >;
 
 #[embassy_executor::task]
@@ -118,7 +118,7 @@ async fn _main(spawner: Spawner) -> ! {
         static LOG_CHANNEL: log::Channel<ThreadModeRawMutex, 1024> = log::Channel::new();
         static LOG_UP: Signal<ThreadModeRawMutex, bool> = Signal::new();
 
-        let log_endpoint = (Ipv4Address([192, 168, 2, 161]), 1234);
+        let log_endpoint = (Ipv4Address::from([192, 168, 2, 161]), 1234);
         let log = log::log_task(log_endpoint, &DHCP_UP, &LOG_CHANNEL, &LOG_UP, stack);
         let echo = echo(1234, &LOG_CHANNEL, stack);
         let cli = cli::cli_task(4321, &LOG_CHANNEL, &DHCP_UP, stack);
@@ -334,7 +334,7 @@ async fn net_stack_setup(
         tx_d0,
         tx_d1,
         tx_en,
-        embassy_stm32::eth::generic_smi::GenericSMI::new(0),
+        embassy_stm32::eth::GenericPhy::new(0),
         mac_addr,
     );
 

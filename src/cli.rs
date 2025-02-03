@@ -12,7 +12,6 @@ use embassy_sync::signal::Signal;
 use embassy_time::Duration;
 use embassy_time::Timer;
 use embedded_cli::token::TokenizeError;
-use getargs::Arg;
 use getargs::Argument;
 use getargs::Options;
 use heapless::Vec;
@@ -321,13 +320,21 @@ where
 }
 
 mod command {
+    use core::ffi::CStr;
+
+    use embassy_net::dns;
+    use embassy_net::dns::DnsQueryType;
     use embassy_net::tcp::TcpSocket;
+    use embassy_net::udp::PacketMetadata;
+    use embassy_net::udp::UdpSocket;
+    use embassy_net::IpEndpoint;
     use embassy_net::Stack as NetStack;
     use getargs::Arg;
     use getargs::Options;
 
     use super::*;
     use crate::log;
+    use crate::tftp;
 
     pub async fn download<'a, M, I, const N: usize>(
         mut args: Options<&'a str, I>,
@@ -339,17 +346,17 @@ mod command {
         I: Iterator<Item = &'a str>,
         M: RawMutex,
     {
-        let arg = args
+        let host_arg = args
             .next_arg()
             .map_err(ParseError::ValueSupplied)?
             .ok_or(ParseError::MissingArg(Arg::Positional("host")))?;
-        let host = arg.positional().ok_or(ParseError::UnknownArg(arg))?;
+        let host = host_arg.positional().ok_or(ParseError::UnknownArg(host_arg))?;
 
-        let port = args
+        let port_arg = args
             .next_arg()
             .map_err(ParseError::ValueSupplied)?
             .ok_or(ParseError::MissingArg(Arg::Positional("port")))?;
-        let port = arg.positional().ok_or(ParseError::UnknownArg(port))?;
+        let port = port_arg.positional().ok_or(ParseError::UnknownArg(port_arg))?;
         let port = port.parse::<u16>().map_err(|_| {
             ParseError::ValueParse(
                 Arg::Positional("port"),
@@ -358,16 +365,77 @@ mod command {
             )
         })?;
 
-        let arg = args
+        let filename_arg = args
             .next_arg()
             .map_err(ParseError::ValueSupplied)?
             .ok_or(ParseError::MissingArg(Arg::Positional("filename")))?;
-        let filename = arg.positional().ok_or(ParseError::UnknownArg(arg))?;
+        let filename =
+            filename_arg.positional().ok_or(ParseError::UnknownArg(filename_arg))?;
+
+        let filename_error = ParseError::ValueParse(
+            filename_arg,
+            filename,
+            // keep message in sync with filename capacity
+            Some("a string without nul bytes of at most 32 bytes"),
+        );
+        let filename_cstr = Vec::<u8, 33>::from_slice(filename.as_bytes())
+            .and_then(|mut filename| {
+                filename.push(0).map_err(drop)?;
+                Ok(filename)
+            })
+            .map_err(|()| filename_error)?;
+        let filename_cstr =
+            CStr::from_bytes_with_nul(&filename_cstr).map_err(|_| filename_error)?;
 
         if let Some(arg) = args.next_arg().map_err(ParseError::from)? {
             return Err(ParseError::UnknownArg(arg).into());
         }
 
-        todo!()
+        let addr = match stack
+            .dns_query(host, DnsQueryType::A)
+            .await
+            .map_err(Some)
+            .and_then(|addrs| addrs.first().copied().ok_or(None))
+        {
+            | Err(e) => {
+                async_writeln!(
+                    sock,
+                    "unable to resolve host `{host}`: {}",
+                    match e {
+                        | Some(dns::Error::Failed) => "name lookup failed",
+                        | Some(dns::Error::InvalidName) => "invalid name",
+                        | Some(dns::Error::NameTooLong) => "name too long",
+                        | None => "no entry found",
+                    }
+                )
+                .await
+                .map_err(SessionError::Write)?;
+                return Ok(());
+            }
+            | Ok(addr) => addr,
+        };
+
+        async_writeln!(sock, "{filename}:").await.map_err(SessionError::Write)?;
+
+        if let Err(e) = tftp::download(
+            filename_cstr,
+            &mut *sock,
+            &UdpSocket::new(
+                stack,
+                &mut [PacketMetadata::EMPTY],
+                &mut [0; ttftp::PACKET_SIZE],
+                &mut [PacketMetadata::EMPTY],
+                &mut [0; ttftp::PACKET_SIZE],
+            ),
+            IpEndpoint { addr, port }.into(),
+            &mut [0; ttftp::PACKET_SIZE],
+            &mut [0; ttftp::PACKET_SIZE],
+        )
+        .await
+        {
+            async_writeln!(sock, "{e}").await.map_err(SessionError::Write)?;
+        }
+
+        Ok(())
     }
 }

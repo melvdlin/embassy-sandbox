@@ -15,6 +15,11 @@ path = "src/main.rs"
 test = false
 bench = false
 doctest = false
+
+[profile.release]
+panic = "abort"
+
+[profile.dev]
 panic = "abort"
 
 [features]
@@ -36,21 +41,22 @@ cortex-m = { version = "0.7.7", features = [
     "inline-asm",
 ], optional = true }
 cortex-m-rt = { version = "0.7.3", optional = true }
-embassy-executor = { version = "0.6.0", features = [
+embassy-executor = { version = "0.7.0", features = [
     "nightly",
     "arch-cortex-m",
-    "integrated-timers",
+    # "integrated-timers",
     "executor-thread",
 ], optional = true }
 embassy-futures = { version = "0.1.1" }
-embassy-net = { version = "0.4.0", features = [
+embassy-net = { version = "0.6.0", features = [
     "dhcpv4-hostname",
     "proto-ipv4",
     "medium-ethernet",
     "tcp",
     "udp",
+    "dns",
 ] }
-embassy-stm32 = { version = "0.1.0", features = [
+embassy-stm32 = { version = "0.2.0", features = [
     "unstable-pac",
     "memory-x",
     "time",
@@ -59,7 +65,7 @@ embassy-stm32 = { version = "0.1.0", features = [
     "exti",
 ], optional = true }
 embassy-sync = "0.6.0"
-embassy-time = "0.3.2"
+embassy-time = "0.4.0"
 embedded-cli = { git = "https://github.com/melvdlin/embedded-cli.git", version = "0.1.0" }
 embedded-hal-async = "1.0.0"
 embedded-io-async = "0.6.1"
@@ -73,8 +79,7 @@ num-traits = { version = "0.2.19", default-features = false }
 panic-halt = "0.2.0"
 rand_core = "0.6.4"
 scuffed-write = { git = "https://github.com/melvdlin/scuffed-write.git", version = "0.1.0" }
-smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp", rev = "dd43c8f189178b0ab3bda798ed8578b5b0a6f094", default-features = false, features = [
-] }
+smoltcp = { version = "0.12.0", default-features = false, features = [] }
 sntpc = { version = "0.3.9", default-features = false, features = ["async"] }
 static_cell = "2.1.0"
 stm32-fmc = { version = "0.3.2", optional = true }
@@ -82,20 +87,22 @@ tap = "1.0.1"
 ttftp = "0.2.0"
 
 [patch.crates-io]
+smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp", rev = "3e3afb62b292cc027c8baeee40bce7b644392115" }
+
 heapless = { git = "https://github.com/rust-embedded/heapless.git", rev = "0ebca2320970b8a1aa3e58ceba924f8c65385946" }
 # nom = { git = "https://github.com/melvdlin/nom.git", rev = "a542852ea21598586a43c2fc8a4d37d8381a5e4d" }
-# embassy-boot-stm32 = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
-# embassy-boot = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
-# embassy-embedded-hal = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
-# embassy-executor-macros = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
-embassy-executor = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
-embassy-futures = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
-embassy-net = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
-embassy-stm32 = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
-embassy-sync = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
-embassy-time = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
-# embassy-time-driver = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
-# embassy-time-queue-driver = { git = "https://github.com/melvdlin/embassy.git", rev = "d2e656b23a85be91c40ca1a1046ed4d4435bd001" }
+# embassy-boot-stm32 = { git = "https://github.com/melvdlin/embassy.git", rev = "cc045d83a3a2a40002174ac21d7367be34989d44" }
+# embassy-boot = { git = "https://github.com/melvdlin/embassy.git", rev = "cc045d83a3a2a40002174ac21d7367be34989d44" }
+# embassy-embedded-hal = { git = "https://github.com/melvdlin/embassy.git", rev = "cc045d83a3a2a40002174ac21d7367be34989d44" }
+# embassy-executor-macros = { git = "https://github.com/melvdlin/embassy.git", rev = "cc045d83a3a2a40002174ac21d7367be34989d44" }
+embassy-executor = { git = "https://github.com/melvdlin/embassy.git", rev = "cc045d83a3a2a40002174ac21d7367be34989d44" }
+embassy-futures = { git = "https://github.com/melvdlin/embassy.git", rev = "cc045d83a3a2a40002174ac21d7367be34989d44" }
+embassy-net = { git = "https://github.com/melvdlin/embassy.git", rev = "cc045d83a3a2a40002174ac21d7367be34989d44" }
+embassy-stm32 = { git = "https://github.com/melvdlin/embassy.git", rev = "cc045d83a3a2a40002174ac21d7367be34989d44" }
+embassy-sync = { git = "https://github.com/melvdlin/embassy.git", rev = "cc045d83a3a2a40002174ac21d7367be34989d44" }
+embassy-time = { git = "https://github.com/melvdlin/embassy.git", rev = "cc045d83a3a2a40002174ac21d7367be34989d44" }
+# embassy-time-driver = { git = "https://github.com/melvdlin/embassy.git", rev = "cc045d83a3a2a40002174ac21d7367be34989d44" }
+# embassy-time-queue-driver = { git = "https://github.com/melvdlin/embassy.git", rev = "cc045d83a3a2a40002174ac21d7367be34989d44" }
 
 # embassy-executor = { path = "../embassy/embassy-executor" }
 # embassy-futures = { path = "../embassy/embassy-futures" }
