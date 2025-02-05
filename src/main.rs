@@ -34,6 +34,7 @@ use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
+use embassy_sync::watch;
 use embassy_time::Delay;
 use embassy_time::Duration;
 use embassy_time::Timer;
@@ -77,8 +78,6 @@ async fn main(spawner: Spawner) -> ! {
     _main(spawner).await
 }
 
-static DHCP_UP: Signal<ThreadModeRawMutex, ()> = Signal::new();
-
 async fn _main(spawner: Spawner) -> ! {
     let (config, ahb_freq) = config();
     let p = embassy_stm32::init(config);
@@ -100,18 +99,27 @@ async fn _main(spawner: Spawner) -> ! {
 
     assert_eq!(head, values);
 
-    let ld1 = gpio::Output::new(p.PJ13, gpio::Level::High, gpio::Speed::Low);
-    let ld2 = gpio::Output::new(p.PJ5, gpio::Level::High, gpio::Speed::Low);
-
     let mut rng = embassy_stm32::rng::Rng::new(p.RNG, Irqs);
     let seeds = core::array::from_fn(|_| rng.next_u64());
 
-    let blink = blink(ld1, ld2);
-
+    static DHCP_UP: watch::Watch<ThreadModeRawMutex, (), 3> = watch::Watch::new();
     let net = async {
         let stack = net_stack_setup(
-            spawner, HOSTNAME, MAC_ADDR, seeds, p.ETH, p.PA1, p.PA2, p.PC1, p.PA7, p.PC4,
-            p.PC5, p.PG13, p.PG14, p.PG11,
+            spawner,
+            DHCP_UP.dyn_sender(),
+            HOSTNAME,
+            MAC_ADDR,
+            seeds,
+            p.ETH,
+            p.PA1,
+            p.PA2,
+            p.PC1,
+            p.PA7,
+            p.PC4,
+            p.PC5,
+            p.PG13,
+            p.PG14,
+            p.PG11,
         )
         .await;
 
@@ -119,11 +127,30 @@ async fn _main(spawner: Spawner) -> ! {
         static LOG_UP: Signal<ThreadModeRawMutex, bool> = Signal::new();
 
         let log_endpoint = (Ipv4Address::from([192, 168, 2, 161]), 1234);
-        let log = log::log_task(log_endpoint, &DHCP_UP, &LOG_CHANNEL, &LOG_UP, stack);
+        let log = log::log_task(
+            log_endpoint,
+            DHCP_UP.dyn_receiver().expect("not enough watch receivers available"),
+            &LOG_CHANNEL,
+            &LOG_UP,
+            stack,
+        );
         let echo = echo(1234, &LOG_CHANNEL, stack);
-        let cli = cli::cli_task(4321, &LOG_CHANNEL, &DHCP_UP, stack);
+        let cli = cli::cli_task(
+            4321,
+            &LOG_CHANNEL,
+            DHCP_UP.dyn_receiver().expect("not enough watch receivers available"),
+            stack,
+        );
         join3(log, echo, cli).await
     };
+
+    let ld1 = gpio::Output::new(p.PJ13, gpio::Level::High, gpio::Speed::Low);
+    let ld2 = gpio::Output::new(p.PJ5, gpio::Level::High, gpio::Speed::Low);
+    let blink = blink(
+        ld1,
+        ld2,
+        DHCP_UP.dyn_receiver().expect("not enough watch receivers available"),
+    );
 
     join(blink, net).await.0
 }
@@ -219,12 +246,16 @@ macro_rules! create_sdram {
 }
 pub(crate) use create_sdram;
 
-async fn blink(ld1: gpio::Output<'_>, ld2: gpio::Output<'_>) -> ! {
+async fn blink(
+    ld1: gpio::Output<'_>,
+    ld2: gpio::Output<'_>,
+    dhcp_up: watch::DynReceiver<'_, ()>,
+) -> ! {
     let mut ld1 = ld1;
     let mut ld2 = ld2;
     loop {
         ld1.set_high();
-        if DHCP_UP.signaled() {
+        if dhcp_up.contains_value() {
             ld2.set_high();
         }
 
@@ -290,6 +321,7 @@ type ETH = embassy_stm32::peripherals::ETH;
 #[allow(clippy::too_many_arguments)]
 async fn net_stack_setup(
     spawner: Spawner,
+    dhcp_up: watch::DynSender<'_, ()>,
     #[allow(unused)] hostname: impl AsRef<str>,
     mac_addr: [u8; 6],
     seeds: [u64; 2],
@@ -348,7 +380,7 @@ async fn net_stack_setup(
         }
         yield_now().await;
     };
-    DHCP_UP.signal(());
+    dhcp_up.send(());
 
     stack
 }

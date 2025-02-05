@@ -9,6 +9,7 @@ use embassy_net::tcp::TcpSocket;
 use embassy_net::Stack as NetStack;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::signal::Signal;
+use embassy_sync::watch;
 use embassy_time::Duration;
 use embassy_time::Timer;
 use embedded_cli::token::TokenizeError;
@@ -23,13 +24,13 @@ use crate::util::ByteSliceExt;
 pub async fn cli_task<M: RawMutex, const N: usize>(
     port: u16,
     log: &log::Channel<M, N>,
-    net_up: &Signal<M, ()>,
+    mut net_up: watch::DynReceiver<'_, ()>,
     stack: NetStack<'_>,
 ) -> ! {
     let mut rx_buf = [0; 4096];
     let mut tx_buf = [0; 4096];
 
-    net_up.wait().await;
+    net_up.get().await;
     let mut server = TcpSocket::new(stack, &mut rx_buf, &mut tx_buf);
     server.set_keep_alive(Some(Duration::from_secs(10)));
     server.set_timeout(Some(Duration::from_secs(20)));
@@ -325,6 +326,7 @@ mod command {
     use embassy_net::dns;
     use embassy_net::dns::DnsQueryType;
     use embassy_net::tcp::TcpSocket;
+    use embassy_net::udp;
     use embassy_net::udp::PacketMetadata;
     use embassy_net::udp::UdpSocket;
     use embassy_net::IpEndpoint;
@@ -415,18 +417,32 @@ mod command {
             | Ok(addr) => addr,
         };
 
-        async_writeln!(sock, "{filename}:").await.map_err(SessionError::Write)?;
+        let mut rx_meta = [PacketMetadata::EMPTY];
+        let mut tx_meta = [PacketMetadata::EMPTY];
+        let mut rx_buf = [0; ttftp::PACKET_SIZE];
+        let mut tx_buf = [0; ttftp::PACKET_SIZE];
+        let mut udp_sock =
+            UdpSocket::new(stack, &mut rx_meta, &mut rx_buf, &mut tx_meta, &mut tx_buf);
 
+        if let Err(e) = udp_sock.bind(0) {
+            async_writeln!(
+                sock,
+                "{}",
+                match e {
+                    | udp::BindError::InvalidState => "invalid socket state",
+                    | udp::BindError::NoRoute => "no route",
+                }
+            )
+            .await
+            .map_err(SessionError::Write)?;
+            return Ok(());
+        }
+
+        async_writeln!(sock, "{filename}:").await.map_err(SessionError::Write)?;
         if let Err(e) = tftp::download(
             filename_cstr,
             &mut *sock,
-            &UdpSocket::new(
-                stack,
-                &mut [PacketMetadata::EMPTY],
-                &mut [0; ttftp::PACKET_SIZE],
-                &mut [PacketMetadata::EMPTY],
-                &mut [0; ttftp::PACKET_SIZE],
-            ),
+            &udp_sock,
             IpEndpoint { addr, port }.into(),
             &mut [0; ttftp::PACKET_SIZE],
             &mut [0; ttftp::PACKET_SIZE],

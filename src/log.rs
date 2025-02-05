@@ -4,6 +4,7 @@ use embassy_sync::mutex::Mutex;
 use embassy_sync::mutex::MutexGuard;
 use embassy_sync::pipe::Pipe;
 use embassy_sync::signal::Signal;
+use embassy_sync::watch;
 use embassy_time::Duration;
 use embassy_time::Timer;
 use embassy_time::WithTimeout;
@@ -71,7 +72,7 @@ impl<M: RawMutex, const N: usize> Write for WriteGuard<'_, M, N> {
 
 pub async fn log_task<M: RawMutex, const BUF: usize>(
     endpoint: impl Into<embassy_net::IpEndpoint>,
-    net_up: &Signal<M, ()>,
+    mut net_up: watch::DynReceiver<'_, ()>,
     mut messages: &Channel<M, BUF>,
     log_up: &Signal<M, bool>,
     stack: embassy_net::Stack<'_>,
@@ -79,7 +80,7 @@ pub async fn log_task<M: RawMutex, const BUF: usize>(
     let mut rx_buf = [0; 128];
     let mut tx_buf = [0; BUF];
 
-    net_up.wait().await;
+    net_up.get().await;
 
     let mut sock = tcp::TcpSocket::new(stack, &mut rx_buf, &mut tx_buf);
     sock.set_keep_alive(Some(Duration::from_secs(10)));

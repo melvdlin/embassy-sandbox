@@ -99,7 +99,7 @@ pub async fn download<'filename, F: Write>(
         sock.send_to(&tx[..send], remote).await?;
         let received = loop {
             let (received, sender) = sock.recv_from(rx).await?;
-            if sender == remote {
+            if sender.endpoint == remote.endpoint {
                 break received;
             }
         };
@@ -123,7 +123,7 @@ pub async fn download<'filename, F: Write>(
         }
     }
 
-    todo!()
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -139,17 +139,27 @@ pub enum TransferError<'filename, 'rx, File> {
 
 impl<File> Display for TransferError<'_, '_, File> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "file transfer failed: {}",
-            match self {
-                | TransferError::Filename(_) => "bad filename",
-                | TransferError::Tftp(_) => "TTFTP",
-                | TransferError::Send(_) => "UDP send",
-                | TransferError::Recv(_) => "UDP receive",
-                | TransferError::File(_) => "file read or write",
-            }
-        )
+        let (msg, cause): (&str, &dyn Display) = match self {
+            | TransferError::Filename(e) => ("bad filename", e),
+            | TransferError::Tftp(e) => ("TTFTP", e),
+            | TransferError::Send(e) => (
+                "UDP send",
+                match e {
+                    | SendError::NoRoute => &"no route",
+                    | SendError::SocketNotBound => &"socket not bound",
+                    | SendError::PacketTooLarge => &"packet too large",
+                },
+            ),
+            | TransferError::Recv(e) => (
+                "UDP receive",
+                match e {
+                    | RecvError::Truncated => &"truncated",
+                },
+            ),
+            | TransferError::File(_e) => ("file read or write", &""),
+        };
+
+        write!(f, "file transfer failed: {msg}: {cause}")
     }
 }
 
