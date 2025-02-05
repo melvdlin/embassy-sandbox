@@ -84,7 +84,7 @@ pub async fn log_task<M: RawMutex, const BUF: usize>(
 
     let mut sock = tcp::TcpSocket::new(stack, &mut rx_buf, &mut tx_buf);
     sock.set_keep_alive(Some(Duration::from_secs(10)));
-    sock.set_timeout(Some(Duration::from_secs(10)));
+    sock.set_timeout(Some(Duration::from_secs(20)));
 
     let endpoint = endpoint.into();
     loop {

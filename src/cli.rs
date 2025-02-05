@@ -6,9 +6,9 @@ use core::str::Utf8Error;
 
 use embassy_net::tcp;
 use embassy_net::tcp::TcpSocket;
+use embassy_net::IpEndpoint;
 use embassy_net::Stack as NetStack;
 use embassy_sync::blocking_mutex::raw::RawMutex;
-use embassy_sync::signal::Signal;
 use embassy_sync::watch;
 use embassy_time::Duration;
 use embassy_time::Timer;
@@ -16,6 +16,7 @@ use embedded_cli::token::TokenizeError;
 use getargs::Argument;
 use getargs::Options;
 use heapless::Vec;
+use scuffed_write::async_write;
 use scuffed_write::async_writeln;
 
 use crate::log;
@@ -43,6 +44,12 @@ pub async fn cli_task<M: RawMutex, const N: usize>(
             Timer::after_secs(1).await;
             continue;
         }
+        let Ok(()) = async_write!(log.writer().await, "connection accepted: ").await;
+        let Ok(()) = if let Some(IpEndpoint { addr, port }) = server.remote_endpoint() {
+            async_writeln!(log.writer().await, "{addr}:{port}").await
+        } else {
+            async_writeln!(log.writer().await, "<no remote endpoint>").await
+        };
 
         let result = handle_cli_connection(&mut server, stack, log).await;
         if let Err(e) = result {
@@ -51,6 +58,9 @@ pub async fn cli_task<M: RawMutex, const N: usize>(
             let Ok(()) = async_writeln!(log_writer, "cli connection closed!").await;
             drop(log_writer)
         }
+        server.abort();
+        // we don't care if the connection is abnormally closed.
+        _ = server.flush().await;
     }
 }
 
@@ -438,8 +448,7 @@ mod command {
             return Ok(());
         }
 
-        async_writeln!(sock, "{filename}:").await.map_err(SessionError::Write)?;
-        if let Err(e) = tftp::download(
+        let dl_result = tftp::download(
             filename_cstr,
             &mut *sock,
             &udp_sock,
@@ -447,8 +456,9 @@ mod command {
             &mut [0; ttftp::PACKET_SIZE],
             &mut [0; ttftp::PACKET_SIZE],
         )
-        .await
-        {
+        .await;
+        async_writeln!(sock).await.map_err(SessionError::Write)?;
+        if let Err(e) = dl_result {
             async_writeln!(sock, "{e}").await.map_err(SessionError::Write)?;
         }
 
