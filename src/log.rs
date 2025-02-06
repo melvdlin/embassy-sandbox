@@ -3,7 +3,6 @@ use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::mutex::Mutex;
 use embassy_sync::mutex::MutexGuard;
 use embassy_sync::pipe::Pipe;
-use embassy_sync::signal::Signal;
 use embassy_sync::watch;
 use embassy_time::Duration;
 use embassy_time::Timer;
