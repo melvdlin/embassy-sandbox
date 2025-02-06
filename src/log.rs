@@ -74,7 +74,7 @@ pub async fn log_task<M: RawMutex, const BUF: usize>(
     endpoint: impl Into<embassy_net::IpEndpoint>,
     mut net_up: watch::DynReceiver<'_, ()>,
     mut messages: &Channel<M, BUF>,
-    log_up: &Signal<M, bool>,
+    log_up: &watch::DynSender<'_, bool>,
     stack: embassy_net::Stack<'_>,
 ) -> ! {
     let mut rx_buf = [0; 128];
@@ -92,7 +92,7 @@ pub async fn log_task<M: RawMutex, const BUF: usize>(
             if sock.connect(endpoint).await.is_err() {
                 break 'connection;
             }
-            log_up.signal(true);
+            log_up.send(true);
             let mut message = [0; BUF];
             loop {
                 let Ok(len) = read_with_timeout(
@@ -102,7 +102,7 @@ pub async fn log_task<M: RawMutex, const BUF: usize>(
                 )
                 .await;
                 if sock.write_all(&message[..len]).await.is_err() {
-                    log_up.signal(false);
+                    log_up.send(false);
                     break 'connection;
                 }
             }

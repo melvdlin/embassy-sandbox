@@ -179,9 +179,6 @@ async fn evaluate<M: RawMutex, const N: usize>(
         | Err(CliError::Parse(e)) => {
             async_writeln!(socket, "{e}").await.map_err(SessionError::Write)
         }
-        | Err(CliError::Other(e)) => {
-            async_writeln!(socket, "{e}").await.map_err(SessionError::Write)
-        }
         | Ok(()) => Ok(()),
     }
 }
@@ -224,7 +221,6 @@ impl Command {
 enum CliError<A: Argument> {
     Session(SessionError),
     Parse(ParseError<A>),
-    Other(&'static dyn Display),
 }
 
 impl<A: Argument> Debug for CliError<A> {
@@ -232,7 +228,6 @@ impl<A: Argument> Debug for CliError<A> {
         match self {
             | Self::Session(e) => f.debug_tuple("Session").field(e).finish(),
             | Self::Parse(e) => f.debug_tuple("Parse").field(e).finish(),
-            | Self::Other(e) => f.debug_tuple("Other").field(&(e as *const _)).finish(),
         }
     }
 }
@@ -250,7 +245,6 @@ where
             type_hint::<&dyn Display>(match self {
                 | CliError::Session(e) => e,
                 | CliError::Parse(e) => e,
-                | CliError::Other(e) => e,
             })
         )
     }
@@ -280,7 +274,6 @@ impl<A: Argument> From<ParseError<A>> for CliError<A> {
 #[derive(Clone, Copy)]
 #[derive(PartialEq, Eq)]
 enum ParseError<A: Argument> {
-    Tokenize(TokenizeError),
     UnknownCommand(A),
     ValueSupplied(getargs::Error<A>),
     ValueParse(getargs::Arg<A>, A, Option<A>),
@@ -297,7 +290,6 @@ where
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "parse error: ")?;
         match *self {
-            | Self::Tokenize(e) => write!(f, "{e}"),
             | Self::UnknownCommand(cmd) => write!(f, "unknown command: {cmd}"),
             | Self::ValueSupplied(e) => write!(f, "{e}"),
             | Self::ValueParse(arg, value, format) => {
@@ -358,7 +350,7 @@ mod command {
         mut args: Options<&'a str, I>,
         sock: &mut TcpSocket<'_>,
         stack: NetStack<'_>,
-        log: &log::Channel<M, N>,
+        _log: &log::Channel<M, N>,
     ) -> Result<(), CliError<&'a str>>
     where
         I: Iterator<Item = &'a str>,

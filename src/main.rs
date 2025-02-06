@@ -4,52 +4,28 @@
 #![feature(core_intrinsics)]
 #![feature(layout_for_ptr)]
 #![allow(internal_features)]
-#![allow(unused)]
-use core::array;
-use core::fmt::Display;
-use core::fmt::Write as FmtWrite;
+
 #[allow(unused)]
 use core::intrinsics::breakpoint;
 use core::mem::MaybeUninit;
-use core::str::FromStr;
 
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::join::join3;
-use embassy_futures::yield_now;
-use embassy_net::tcp;
-use embassy_net::tcp::TcpSocket;
-use embassy_net::IpEndpoint;
 use embassy_net::Ipv4Address;
-use embassy_sandbox::cli;
-use embassy_sandbox::log;
-use embassy_sandbox::util::ByteSliceExt;
+use embassy_sandbox::*;
 use embassy_stm32::bind_interrupts;
-use embassy_stm32::eth::PacketQueue;
 use embassy_stm32::gpio;
 use embassy_stm32::time::Hertz;
-use embassy_stm32::Peripheral;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
-use embassy_sync::channel;
-use embassy_sync::mutex::Mutex;
-use embassy_sync::signal::Signal;
 use embassy_sync::watch;
-use embassy_time::Delay;
+use embassy_sync::watch::Watch;
 use embassy_time::Duration;
 use embassy_time::Timer;
-use embedded_hal_async::delay::DelayNs;
-use embedded_io_async::Write as AsyncWrite;
-use getargs::Options;
-use heapless::format;
-use heapless::String;
-use heapless::Vec;
 #[allow(unused_imports)]
 use panic_halt as _;
 use rand_core::RngCore;
-use scuffed_write::async_writeln;
-use static_cell::ConstStaticCell;
-use static_cell::StaticCell;
 
 const HOSTNAME: &str = "STM32F7-DISCO";
 // first octet: locally administered (administratively assigned) unicast address;
@@ -57,21 +33,9 @@ const HOSTNAME: &str = "STM32F7-DISCO";
 const MAC_ADDR: [u8; 6] = [0x02, 0xC7, 0x52, 0x67, 0x83, 0xEF];
 
 bind_interrupts!(struct Irqs {
-    ETH => embassy_stm32::eth::InterruptHandler;
-    RNG => embassy_stm32::rng::InterruptHandler<embassy_stm32::peripherals::RNG>;
+    ETH => net::EthIrHandler;
+    RNG => net::RngIrHandler;
 });
-
-type Device = embassy_stm32::eth::Ethernet<
-    'static,
-    embassy_stm32::peripherals::ETH,
-    embassy_stm32::eth::GenericPhy,
->;
-
-#[embassy_executor::task]
-async fn net_task(runner: embassy_net::Runner<'static, Device>) -> ! {
-    let mut runner = runner;
-    runner.run().await
-}
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) -> ! {
@@ -79,17 +43,17 @@ async fn main(spawner: Spawner) -> ! {
 }
 
 async fn _main(spawner: Spawner) -> ! {
-    let (config, ahb_freq) = config();
+    let (config, _ahb_freq) = config();
     let p = embassy_stm32::init(config);
-    let mut button =
+    let mut _button =
         embassy_stm32::exti::ExtiInput::new(p.PA0, p.EXTI0, gpio::Pull::Down);
 
     // 128 Kib
     const SDRAM_SIZE: usize = (128 / 8) << 10;
     let memory: &'static mut [MaybeUninit<u32>] =
-        unsafe { sdram_init::<SDRAM_SIZE>(create_sdram!(p)) };
+        unsafe { sdram::init::<SDRAM_SIZE>(sdram::create_sdram!(p)) };
 
-    let (head, tail) = memory.split_at_mut(4);
+    let (head, _tail) = memory.split_at_mut(4);
     let values: &[u32] = &[0x12345678, 0x87654321, 0x89ABCDEF, 0xFEDCBA98];
     for (src, dst) in values.iter().zip(head.iter_mut()) {
         dst.write(*src);
@@ -103,13 +67,15 @@ async fn _main(spawner: Spawner) -> ! {
     let seeds = core::array::from_fn(|_| rng.next_u64());
 
     static DHCP_UP: watch::Watch<ThreadModeRawMutex, (), 3> = watch::Watch::new();
+    let dhcp_up_sender = DHCP_UP.dyn_sender();
     let net = async {
-        let stack = net_stack_setup(
+        let stack = net::stack_setup(
             spawner,
-            DHCP_UP.dyn_sender(),
+            &dhcp_up_sender,
             HOSTNAME,
             MAC_ADDR,
             seeds,
+            Irqs,
             p.ETH,
             p.PA1,
             p.PA2,
@@ -124,14 +90,15 @@ async fn _main(spawner: Spawner) -> ! {
         .await;
 
         static LOG_CHANNEL: log::Channel<ThreadModeRawMutex, 1024> = log::Channel::new();
-        static LOG_UP: Signal<ThreadModeRawMutex, bool> = Signal::new();
+        static LOG_UP: Watch<ThreadModeRawMutex, bool, 3> = Watch::new();
+        let log_up_sender = LOG_UP.dyn_sender();
 
         let log_endpoint = (Ipv4Address::from([192, 168, 2, 161]), 1234);
         let log = log::log_task(
             log_endpoint,
             DHCP_UP.dyn_receiver().expect("not enough watch receivers available"),
             &LOG_CHANNEL,
-            &LOG_UP,
+            &log_up_sender,
             stack,
         );
         let echo = echo(1234, &LOG_CHANNEL, stack);
@@ -154,97 +121,6 @@ async fn _main(spawner: Spawner) -> ! {
 
     join(blink, net).await.0
 }
-
-type Sdram = stm32_fmc::Sdram<
-    embassy_stm32::fmc::Fmc<'static, embassy_stm32::peripherals::FMC>,
-    stm32_fmc::devices::is42s32400f_6::Is42s32400f6,
->;
-
-/// Safety: SIZE must be at most the SDRAM size in bytes
-unsafe fn sdram_init<const SIZE: usize>(sdram: Sdram) -> &'static mut [MaybeUninit<u32>] {
-    static SDRAM: StaticCell<Sdram> = StaticCell::new();
-    let sdram = SDRAM.init(sdram);
-
-    let ptr = sdram.init(&mut Delay);
-    let ptr = ptr.cast::<MaybeUninit<u32>>();
-    // Safety: pointee u32: Sized
-    let size = unsafe { core::mem::size_of_val_raw(ptr) };
-    let len = SIZE / size;
-    // Safety:
-    // - it is assumed that `embassy_stm32::fmc::Fmc::sdram_a13bits_d32bits_4banks_bank1`
-    //   returns a read/write valid pointer
-    // - the source ptr does not escape this scope
-    assert!(SIZE <= isize::MAX as usize);
-    assert!(ptr.wrapping_add(len) >= ptr);
-    unsafe { core::slice::from_raw_parts_mut(ptr, len) }
-}
-
-macro_rules! create_sdram {
-    ($peripherals:ident) => {
-        embassy_stm32::fmc::Fmc::sdram_a13bits_d32bits_4banks_bank1(
-            $peripherals.FMC,
-            $peripherals.PF0,
-            $peripherals.PF1,
-            $peripherals.PF2,
-            $peripherals.PF3,
-            $peripherals.PF4,
-            $peripherals.PF5,
-            $peripherals.PF12,
-            $peripherals.PF13,
-            $peripherals.PF14,
-            $peripherals.PF15,
-            $peripherals.PG0,
-            $peripherals.PG1,
-            $peripherals.PG2,
-            $peripherals.PG4,
-            $peripherals.PG5,
-            $peripherals.PD14,
-            $peripherals.PD15,
-            $peripherals.PD0,
-            $peripherals.PD1,
-            $peripherals.PE7,
-            $peripherals.PE8,
-            $peripherals.PE9,
-            $peripherals.PE10,
-            $peripherals.PE11,
-            $peripherals.PE12,
-            $peripherals.PE13,
-            $peripherals.PE14,
-            $peripherals.PE15,
-            $peripherals.PD8,
-            $peripherals.PD9,
-            $peripherals.PD10,
-            $peripherals.PH8,
-            $peripherals.PH9,
-            $peripherals.PH10,
-            $peripherals.PH11,
-            $peripherals.PH12,
-            $peripherals.PH13,
-            $peripherals.PH14,
-            $peripherals.PH15,
-            $peripherals.PI0,
-            $peripherals.PI1,
-            $peripherals.PI2,
-            $peripherals.PI3,
-            $peripherals.PI6,
-            $peripherals.PI7,
-            $peripherals.PI9,
-            $peripherals.PI10,
-            $peripherals.PE0,
-            $peripherals.PE1,
-            $peripherals.PI4,
-            $peripherals.PI5,
-            $peripherals.PH2,
-            $peripherals.PG8,
-            $peripherals.PG15,
-            $peripherals.PH3,
-            $peripherals.PF11,
-            $peripherals.PH5,
-            stm32_fmc::devices::is42s32400f_6::Is42s32400f6 {},
-        )
-    };
-}
-pub(crate) use create_sdram;
 
 async fn blink(
     ld1: gpio::Output<'_>,
@@ -275,12 +151,18 @@ async fn blink(
 
 async fn echo<M, const N: usize>(
     port: u16,
-    log: &log::Channel<M, N>,
+    _log: &log::Channel<M, N>,
     stack: embassy_net::Stack<'_>,
 ) -> !
 where
     M: RawMutex,
 {
+    use core::fmt::Write as FmtWrite;
+
+    use embassy_net::tcp;
+    use embedded_io_async::Write as AsyncWrite;
+    use heapless::String;
+
     let mut rx_buf = [0; 4096];
     let mut tx_buf = [0; 4096];
 
@@ -305,84 +187,17 @@ where
                 | Ok(len) => len,
             };
             let buf = &buf[..len];
-            writeln!(fmt, "{}", buf.len());
+            writeln!(fmt, "{}", buf.len())
+                .expect("usize decimal repr should not exceed 1026 bytes");
             if server.write_all(fmt.as_bytes()).await.is_err() {
                 break;
             }
             fmt.clear();
         }
         server.close();
+        server.abort();
         let _ = server.flush().await;
     }
-}
-
-#[allow(clippy::upper_case_acronyms)]
-type ETH = embassy_stm32::peripherals::ETH;
-#[allow(clippy::too_many_arguments)]
-async fn net_stack_setup(
-    spawner: Spawner,
-    dhcp_up: watch::DynSender<'_, ()>,
-    #[allow(unused)] hostname: impl AsRef<str>,
-    mac_addr: [u8; 6],
-    seeds: [u64; 2],
-    eth: ETH,
-    ref_clk: impl Peripheral<P = impl embassy_stm32::eth::RefClkPin<ETH>> + 'static,
-    mdio: impl Peripheral<P = impl embassy_stm32::eth::MDIOPin<ETH>> + 'static,
-    mdc: impl Peripheral<P = impl embassy_stm32::eth::MDCPin<ETH>> + 'static,
-    crs: impl Peripheral<P = impl embassy_stm32::eth::CRSPin<ETH>> + 'static,
-    rx_d0: impl Peripheral<P = impl embassy_stm32::eth::RXD0Pin<ETH>> + 'static,
-    rx_d1: impl Peripheral<P = impl embassy_stm32::eth::RXD1Pin<ETH>> + 'static,
-    tx_d0: impl Peripheral<P = impl embassy_stm32::eth::TXD0Pin<ETH>> + 'static,
-    tx_d1: impl Peripheral<P = impl embassy_stm32::eth::TXD1Pin<ETH>> + 'static,
-    tx_en: impl Peripheral<P = impl embassy_stm32::eth::TXEnPin<ETH>> + 'static,
-) -> embassy_net::Stack<'static> {
-    use embassy_net::*;
-    let net_cfg =
-        Config::dhcpv4(dhcp_config(hostname).unwrap() /*Default::default()*/);
-    // Config::ipv4_static(StaticConfigV4 {
-    //     address: Ipv4Cidr::new(Ipv4Address([192, 168, 2, 43]), 24),
-    //     gateway: None,
-    //     dns_servers: Default::default(),
-    // });
-
-    static PACKET_QUEUE: ConstStaticCell<PacketQueue<8, 8>> =
-        ConstStaticCell::new(PacketQueue::new());
-    let packet_queue = PACKET_QUEUE.take();
-
-    static RESOURCES: ConstStaticCell<StackResources<8>> =
-        ConstStaticCell::new(StackResources::new());
-    let resources = RESOURCES.take();
-
-    let ethernet = embassy_stm32::eth::Ethernet::new(
-        packet_queue,
-        eth,
-        Irqs,
-        ref_clk,
-        mdio,
-        mdc,
-        crs,
-        rx_d0,
-        rx_d1,
-        tx_d0,
-        tx_d1,
-        tx_en,
-        embassy_stm32::eth::GenericPhy::new(0),
-        mac_addr,
-    );
-
-    let (stack, runner) = embassy_net::new(ethernet, net_cfg, resources, seeds[0]);
-
-    spawner.must_spawn(net_task(runner));
-    stack.wait_config_up().await;
-    let config = loop {
-        if let Some(config) = stack.config_v4() {
-            break config;
-        }
-        yield_now().await;
-    };
-    dhcp_up.send(());
-
-    stack
 }
 
 // noinspection ALL
@@ -412,16 +227,6 @@ fn config() -> (embassy_stm32::Config, Hertz) {
         rcc
     };
     (config, Hertz(64_000_000))
-}
-
-#[allow(unused)]
-fn dhcp_config(hostname: impl AsRef<str>) -> Result<embassy_net::DhcpConfig, ()> {
-    let mut config = embassy_net::DhcpConfig::default();
-    config.hostname = Some(String::from_str(hostname.as_ref())?);
-    config.retry_config.discover_timeout = smoltcp::time::Duration::from_secs(16);
-    config.retry_config.initial_request_timeout = smoltcp::time::Duration::from_secs(16);
-
-    Ok(config)
 }
 
 // D0  = PC9
