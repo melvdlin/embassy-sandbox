@@ -348,6 +348,12 @@ mod command {
     use crate::log;
     use crate::tftp;
 
+    macro_rules! error {
+        ($dst:expr, $($arg:tt)*) => {
+            async { ::scuffed_write::async_writeln!($dst, $($arg)*).await.map_err(SessionError::Write).map_err(CliError::Session) }
+        };
+    }
+
     pub async fn download<'a, M, I, const N: usize>(
         mut args: Options<&'a str, I>,
         sock: &mut TcpSocket<'_>,
@@ -384,20 +390,22 @@ mod command {
         let filename =
             filename_arg.positional().ok_or(ParseError::UnknownArg(filename_arg))?;
 
-        let filename_error = ParseError::ValueParse(
-            filename_arg,
-            filename,
-            // keep message in sync with filename capacity
-            Some("a string without nul bytes of at most 32 bytes"),
-        );
-        let filename_cstr = Vec::<u8, 33>::from_slice(filename.as_bytes())
-            .and_then(|mut filename| {
-                filename.push(0).map_err(drop)?;
-                Ok(filename)
-            })
-            .map_err(|()| filename_error)?;
-        let filename_cstr =
-            CStr::from_bytes_with_nul(&filename_cstr).map_err(|_| filename_error)?;
+        const FILENAME_CAP: usize = 128;
+        let Ok(filename_cstr) = Vec::<u8, { FILENAME_CAP + 1 }>::from_slice(
+            filename.as_bytes(),
+        )
+        .and_then(|mut filename| {
+            filename.push(0).map_err(drop)?;
+            Ok(filename)
+        }) else {
+            return error!(sock, "filename must be at most {FILENAME_CAP} bytes").await;
+        };
+        let filename_cstr = match CStr::from_bytes_with_nul(&filename_cstr) {
+            | Ok(cstr) => cstr,
+            | Err(e) => {
+                return error!(sock, "illegal filename: {e}").await;
+            }
+        };
 
         if let Some(arg) = args.next_arg().map_err(ParseError::from)? {
             return Err(ParseError::UnknownArg(arg).into());
@@ -410,7 +418,7 @@ mod command {
             .and_then(|addrs| addrs.first().copied().ok_or(None))
         {
             | Err(e) => {
-                async_writeln!(
+                return error!(
                     sock,
                     "unable to resolve host `{host}`: {}",
                     match e {
@@ -420,9 +428,7 @@ mod command {
                         | None => "no entry found",
                     }
                 )
-                .await
-                .map_err(SessionError::Write)?;
-                return Ok(());
+                .await;
             }
             | Ok(addr) => addr,
         };
@@ -435,7 +441,7 @@ mod command {
             UdpSocket::new(stack, &mut rx_meta, &mut rx_buf, &mut tx_meta, &mut tx_buf);
 
         if let Err(e) = udp_sock.bind(0) {
-            async_writeln!(
+            return error!(
                 sock,
                 "{}",
                 match e {
@@ -443,9 +449,7 @@ mod command {
                     | udp::BindError::NoRoute => "no route",
                 }
             )
-            .await
-            .map_err(SessionError::Write)?;
-            return Ok(());
+            .await;
         }
 
         let dl_result = tftp::download(
@@ -459,7 +463,7 @@ mod command {
         .await;
         async_writeln!(sock).await.map_err(SessionError::Write)?;
         if let Err(e) = dl_result {
-            async_writeln!(sock, "{e}").await.map_err(SessionError::Write)?;
+            error!(sock, "{e}").await?;
         }
 
         Ok(())
