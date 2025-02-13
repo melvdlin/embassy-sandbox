@@ -83,7 +83,6 @@ smoltcp = { version = "0.12.0", default-features = false, features = [] }
 sntpc = { version = "0.3.9", default-features = false, features = ["async"] }
 static_cell = "2.1.0"
 stm32-fmc = { version = "0.3.2", optional = true }
-tap = "1.0.1"
 ttftp = "0.2.0"
 
 [patch.crates-io]

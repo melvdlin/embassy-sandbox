@@ -1,21 +1,22 @@
 #![no_std]
 #![no_main]
 #![feature(impl_trait_in_assoc_type)]
-#![feature(core_intrinsics)]
 #![feature(layout_for_ptr)]
-#![allow(internal_features)]
 
-#[allow(unused)]
-use core::intrinsics::breakpoint;
 use core::mem::MaybeUninit;
 
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::join::join3;
+use embassy_futures::yield_now;
 use embassy_net::Ipv4Address;
 use embassy_sandbox::*;
 use embassy_stm32::bind_interrupts;
+#[allow(unused_imports)]
+use embassy_stm32::dsihost::DsiHost;
 use embassy_stm32::gpio;
+use embassy_stm32::peripherals;
+use embassy_stm32::rcc;
 use embassy_stm32::time::Hertz;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
@@ -43,13 +44,13 @@ async fn main(spawner: Spawner) -> ! {
 }
 
 async fn _main(spawner: Spawner) -> ! {
-    let (config, _ahb_freq) = config();
+    let (config, _ahb_freq, hse_freq) = config();
     let p = embassy_stm32::init(config);
     let mut _button =
         embassy_stm32::exti::ExtiInput::new(p.PA0, p.EXTI0, gpio::Pull::Down);
 
-    // 128 Kib
-    const SDRAM_SIZE: usize = (128 / 8) << 10;
+    // 128 Mib
+    const SDRAM_SIZE: usize = (128 / 8) << 20;
     let memory: &'static mut [MaybeUninit<u32>] =
         unsafe { sdram::init::<SDRAM_SIZE>(sdram::create_sdram!(p)) };
 
@@ -118,6 +119,43 @@ async fn _main(spawner: Spawner) -> ! {
         ld2,
         DHCP_UP.dyn_receiver().expect("not enough watch receivers available"),
     );
+
+    // let mut dsi = DsiHost::new(p.DSIHOST, p.PJ2);
+    // _ = dsi.write_cmd(0, 0, &[]);
+    // dsi.disable_wrapper_dsi();
+    // dsi.disable();
+
+    {
+        rcc::enable_and_reset::<peripherals::DSIHOST>();
+        let dsihost = embassy_stm32::pac::DSIHOST;
+
+        // enable voltage regulator
+        dsihost.wrpcr().modify(|w| w.set_regen(true));
+        while !dsihost.wisr().read().rrs() {
+            yield_now().await;
+        }
+
+        // PLL setup
+        let f_vco = Hertz::mhz(1_000);
+        let pll_idf = 1_u32;
+        let pll_ndiv = f_vco * pll_idf / hse_freq / 2;
+        let pll_odf = Hertz::mhz(500) / (f_vco / 2_u32);
+
+        debug_assert!((10..=125).contains(&pll_ndiv));
+        debug_assert!((1..=7).contains(&pll_idf));
+        debug_assert!([1, 2, 4, 8].contains(&pll_odf));
+
+        dsihost.wrpcr().modify(|w| {
+            w.set_ndiv(pll_ndiv as u8);
+            w.set_idf(pll_idf as u8 - 1);
+            w.set_odf(pll_odf.ilog2() as u8);
+            w.set_pllen(true);
+        });
+
+        while !dsihost.wisr().read().pllls() {
+            yield_now().await;
+        }
+    }
 
     join(blink, net).await.0
 }
@@ -201,13 +239,19 @@ where
 }
 
 // noinspection ALL
-fn config() -> (embassy_stm32::Config, Hertz) {
+fn config() -> (embassy_stm32::Config, Hertz, Hertz) {
     use embassy_stm32::rcc::*;
     let mut config = embassy_stm32::Config::default();
+    let hse_freq = Hertz::mhz(25);
     config.rcc = {
+        // config is non-exhaustive
         let mut rcc = Config::default();
         // HSI == 16 MHz
         rcc.hsi = true;
+        rcc.hse = Some(Hse {
+            freq: hse_freq,
+            mode: HseMode::Oscillator,
+        });
         rcc.pll = Some(Pll {
             // PLL in == 16 MHz / 8 == 2 MHz
             prediv: PllPreDiv::DIV8,
@@ -226,7 +270,7 @@ fn config() -> (embassy_stm32::Config, Hertz) {
         rcc.ahb_pre = AHBPrescaler::DIV1;
         rcc
     };
-    (config, Hertz(64_000_000))
+    (config, Hertz::mhz(64), hse_freq)
 }
 
 // D0  = PC9
