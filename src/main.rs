@@ -129,6 +129,8 @@ async fn _main(spawner: Spawner) -> ! {
         rcc::enable_and_reset::<peripherals::DSIHOST>();
         let dsihost = embassy_stm32::pac::DSIHOST;
 
+        // === global config ===
+
         // enable voltage regulator
         dsihost.wrpcr().modify(|w| w.set_regen(true));
         while !dsihost.wisr().read().rrs() {
@@ -137,9 +139,10 @@ async fn _main(spawner: Spawner) -> ! {
 
         // PLL setup
         let f_vco = Hertz::mhz(1_000);
+        let hs_clk = Hertz::mhz(500);
         let pll_idf = 1_u32;
         let pll_ndiv = f_vco * pll_idf / hse_freq / 2;
-        let pll_odf = Hertz::mhz(500) / (f_vco / 2_u32);
+        let pll_odf = hs_clk / (f_vco / 2_u32);
 
         debug_assert!((10..=125).contains(&pll_ndiv));
         debug_assert!((1..=7).contains(&pll_idf));
@@ -155,6 +158,156 @@ async fn _main(spawner: Spawner) -> ! {
         while !dsihost.wisr().read().pllls() {
             yield_now().await;
         }
+
+        // lane_byte_clk
+        //  = fvco / (2 * odf * 8)
+        //  = 1 GHz / (2 * 1 * 8)
+        //  = 1/16 GHz
+        //  = 62.5 MHz
+
+        // TX escape clock = lane_byte_clk / TXECKDIV < 20 MHz
+        //  <=> TXECKDIV > lane_byte_clk / 20 MHz
+        //  <=> TXECKDIV > (62.5 / 20) MHz
+        //  <=> TXECKDIV > 3.125
+        dsihost.ccr().modify(|w| w.set_txeckdiv(4));
+
+        // configure number of active data lanes
+        // 0 = lane 0
+        // 1 = lanes 0 and 1 (default)
+        // dsihost.pconfr().modify(|w| w.set_nl(1));
+
+        // enable D-PHY digital section and clock lane module
+        dsihost.pctlr().modify(|w| {
+            w.set_den(true);
+            w.set_cke(true);
+        });
+
+        // set clock lane control to auto and enable HS clock lane
+        dsihost.clcr().modify(|w| {
+            w.set_acr(true);
+            w.set_dpcc(true);
+        });
+
+        // set unit interval in multiples of .25 ns
+        let unit_interval = Hertz::mhz(1_000) * 4_u32 / hs_clk;
+        debug_assert!(unit_interval <= 0b11_1111);
+        dsihost.wpcr0().modify(|w| w.set_uix4(unit_interval as u8));
+
+        dsihost.pcr().modify(|w| {
+            // enable EoT packet transmission
+            w.ettxe();
+            // enable EoT packet reception
+            w.etrxe();
+            // enable automatic bus turnaround
+            w.btae();
+            // check ECC of received packets
+            w.eccrxe();
+            // check CRC checksum of received packets
+            w.crcrxe();
+        });
+
+        // set DSI wrapper to 24 bit color
+        dsihost.wcfgr().modify(|w| w.set_colmux(0b101));
+        // set DSI host to use 24 bit color
+        dsihost.lcolcr().modify(|w| w.set_colc(0b101));
+
+        // configure HSYNC, VSYNC and DATA ENABLE polarity
+        // to match LTDC polarity config
+        // default: all active high
+        // dsihost.lpcr().modify(|w| {
+        //     w.set_hsp(false);
+        //     w.set_vsp(false);
+        //     w.set_dep(false);
+        // });
+
+        // === adapted command mode config ===
+
+        // set DSI host to adapted command mode
+        dsihost.mcr().modify(|w| w.set_cmdm(true));
+        // set DSI wrapper to adapted command mode
+        dsihost.wcfgr().modify(|w| w.set_dsim(true));
+
+        // set stop wait time
+        // (minimum wait time before requesting a HS transmission after stop state)
+        // minimum is 10 (lanebyteclk cycles?)
+        dsihost.pconfr().modify(|w| w.set_sw_time(10));
+
+        // set size in pixels of long write commands
+        // DSI host pixel FIFO is 960 * 32-bit words
+        // 24-bit color depth
+        //  => max command size = 960 * 32/24 = 1280 px
+        dsihost.lccr().modify(|w| w.set_cmdsize(960 * 32 / 24));
+
+        // set LTDC halt polarity in accordance with LPCR:
+        // LPCR VSYNC active high <=> LTDC halt on rising edge
+        // default: halt on falling edge
+        dsihost.wcfgr().modify(|w| w.set_vspol(true));
+
+        // configure tearing effect
+        // TE effect over link
+        //  => acknowledge request must be enabled
+        //  && bus turnaround in PCR must be enabled
+        dsihost.wcfgr().modify(|w| {
+            // tearing effect over pin
+            w.set_tesrc(true);
+            // polarity depends on display TE pin polarity
+            w.set_tepol(true);
+        });
+        dsihost.cmcr().modify(|w| {
+            // disable TE ack request
+            w.set_teare(false);
+        });
+
+        // configure refresh mode
+        // auto refresh:   WCR_LTDCEN is set automatically on TE event
+        // manual refresh: WCR_LTDCEN must be set by software on TE event (default)
+        dsihost.wcfgr().modify(|w| w.set_ar(true));
+
+        // LTDC settings
+        // pixel clock:
+        //  - must be fast enough to ensure that GRAM refresh time
+        //    is shorter than display internal refresh rate
+        //  - must be slow enough to avoid LTDC FIFO underrun
+        // video timing:
+        //  - vertical/horizontal blanking periods may be set to minumum (1)
+        //  - HACT and VACT must be set in accordance with line length and count
+        // ...
+
+        // command transmission mode
+        // commands may be transmitted in either high-speed or low-power
+        // default: high-speed (0)
+        //
+        // some displays require init commands to be sent in LP mode
+        // dsihost.cmcr().modify(|w| {
+        //     // generic short write zero params
+        //     w.set_gsw0tx(false);
+        //     // generic short write one param
+        //     w.set_gsw1tx(false);
+        //     // generic short write two params
+        //     w.set_gsw2tx(false);
+        //     // generic short read zero params
+        //     w.set_gsr0tx(false);
+        //     // generic short read one param
+        //     w.set_gsr1tx(false);
+        //     // generic short read two params
+        //     w.set_gsr2tx(false);
+        //     // generic long write
+        //     w.set_glwtx(false);
+        //     // DCS short write zero params
+        //     w.set_dsw0tx(false);
+        //     // DCS short write one param
+        //     w.set_dsw1tx(false);
+        //     // DCS short read zero params
+        //     w.set_dsr0tx(false);
+        //     // DCS long write
+        //     w.set_dlwtx(false);
+        //     // maximum read packet size
+        //     w.set_mrdps(false);
+        // });
+
+        // request an acknowledge after every sent command
+        // default: false
+        // dsihost.cmcr().modify(|w| w.set_are(false))
     }
 
     join(blink, net).await.0
