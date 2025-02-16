@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(impl_trait_in_assoc_type)]
-#![feature(layout_for_ptr)]
+#![feature(maybe_uninit_fill)]
 
 use core::mem::MaybeUninit;
 
@@ -15,6 +15,7 @@ use embassy_stm32::bind_interrupts;
 #[allow(unused_imports)]
 use embassy_stm32::dsihost::DsiHost;
 use embassy_stm32::gpio;
+use embassy_stm32::ltdc;
 use embassy_stm32::peripherals;
 use embassy_stm32::rcc;
 use embassy_stm32::time::Hertz;
@@ -51,16 +52,14 @@ async fn _main(spawner: Spawner) -> ! {
 
     // 128 Mib
     const SDRAM_SIZE: usize = (128 / 8) << 20;
-    let memory: &'static mut [MaybeUninit<u32>] =
+    let memory: &'static mut [MaybeUninit<u8>] =
         unsafe { sdram::init::<SDRAM_SIZE>(sdram::create_sdram!(p)) };
-
     let (head, _tail) = memory.split_at_mut(4);
-    let values: &[u32] = &[0x12345678, 0x87654321, 0x89ABCDEF, 0xFEDCBA98];
+    let values: &[u8] = &[0x12, 0x21, 0xEF, 0xFE];
     for (src, dst) in values.iter().zip(head.iter_mut()) {
         dst.write(*src);
     }
-    let head =
-        unsafe { core::mem::transmute::<&mut [MaybeUninit<u32>], &mut [u32]>(head) };
+    let head = unsafe { core::mem::transmute::<&mut [MaybeUninit<u8>], &mut [u8]>(head) };
 
     assert_eq!(head, values);
 
@@ -273,6 +272,42 @@ async fn _main(spawner: Spawner) -> ! {
         //  - HACT and VACT must be set in accordance with line length and count
         // ...
 
+        let mut ltdc = ltdc::Ltdc::new(p.LTDC);
+        ltdc.init(&ltdc::LtdcConfiguration {
+            active_width: 800,
+            active_height: 480,
+            h_back_porch: 1,
+            h_front_porch: 1,
+            v_back_porch: 1,
+            v_front_porch: 1,
+            h_sync: 1,
+            v_sync: 1,
+            h_sync_polarity: ltdc::PolarityActive::ActiveHigh,
+            v_sync_polarity: ltdc::PolarityActive::ActiveHigh,
+            data_enable_polarity: ltdc::PolarityActive::ActiveLow,
+            pixel_clock_polarity: ltdc::PolarityEdge::RisingEdge,
+        });
+        const COLS: usize = 800;
+        const ROWS: usize = 480;
+        const PIXELS: usize = COLS * ROWS;
+        ltdc.init_layer(
+            &ltdc::LtdcLayerConfig {
+                layer: ltdc::LtdcLayer::Layer1,
+                pixel_format: ltdc::PixelFormat::RGB888,
+                window_x0: 0,
+                window_x1: COLS as u16,
+                window_y0: 0,
+                window_y1: ROWS as u16,
+            },
+            None,
+        );
+        let buf: &'static mut [u8; PIXELS * 3] =
+            MaybeUninit::fill(&mut memory[..PIXELS * 3], 0).try_into().unwrap();
+        let buf = bytemuck::must_cast_mut::<_, [[[u8; 3]; COLS]; ROWS]>(buf);
+        let pixbuf = bytemuck::must_cast_slice_mut::<_, [u8; 3]>(buf);
+        pixbuf.fill([0x57, 0x00, 0x7F]);
+        ltdc.set_buffer(ltdc::LtdcLayer::Layer1, buf.as_ptr().cast()).await.unwrap();
+
         // command transmission mode
         // commands may be transmitted in either high-speed or low-power
         // default: high-speed (0)
@@ -308,6 +343,8 @@ async fn _main(spawner: Spawner) -> ! {
         // request an acknowledge after every sent command
         // default: false
         // dsihost.cmcr().modify(|w| w.set_are(false))
+
+        dsihost.cr().modify(|w| w.set_en(true));
     }
 
     join(blink, net).await.0
@@ -414,6 +451,16 @@ fn config() -> (embassy_stm32::Config, Hertz, Hertz) {
             divp: Some(PllPDiv::DIV2),
             divq: None,
             divr: None,
+        });
+        rcc.pllsai = Some(Pll {
+            // PLL in == 16 MHz / 8 == 2 MHz
+            prediv: PllPreDiv::DIV8,
+            // PLL out == 2 MHz * 64 == 128 MHz
+            mul: PllMul(64),
+            divp: None,
+            divq: None,
+            // LTDC clock == PLLSAIR == PLL out / divr == 128 MHz / 4 == 32 MHz
+            divr: Some(PllRDiv::DIV4),
         });
         rcc.pll_src = PllSource::HSI;
         rcc.sys = Sysclk::PLL1_P;

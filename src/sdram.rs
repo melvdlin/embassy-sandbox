@@ -10,22 +10,19 @@ type Sdram = stm32_fmc::Sdram<
 
 /// # Safety
 /// SIZE must be at most the SDRAM size in bytes
-pub unsafe fn init<const SIZE: usize>(sdram: Sdram) -> &'static mut [MaybeUninit<u32>] {
+pub unsafe fn init<const SIZE: usize>(sdram: Sdram) -> &'static mut [MaybeUninit<u8>] {
     static SDRAM: StaticCell<Sdram> = StaticCell::new();
     let sdram = SDRAM.init(sdram);
 
     let ptr = sdram.init(&mut Delay);
-    let ptr = ptr.cast::<MaybeUninit<u32>>();
-    // Safety: pointee u32: Sized
-    let size = unsafe { core::mem::size_of_val_raw(ptr) };
-    let len = SIZE / size;
+    let ptr = ptr.cast::<MaybeUninit<u8>>();
     // Safety:
     // - it is assumed that `embassy_stm32::fmc::Fmc::sdram_a13bits_d32bits_4banks_bank1`
     //   returns a read/write valid pointer
     // - the source ptr does not escape this scope
     assert!(SIZE <= isize::MAX as usize);
-    assert!(ptr.wrapping_add(len) >= ptr);
-    unsafe { core::slice::from_raw_parts_mut(ptr, len) }
+    assert!(ptr.wrapping_add(SIZE) >= ptr);
+    unsafe { core::slice::from_raw_parts_mut(ptr, SIZE) }
 }
 
 #[macro_export]

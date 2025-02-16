@@ -35,7 +35,7 @@ cross = [
 
 [dependencies]
 bitflags = { version = "2.6.0", features = ["bytemuck"] }
-bytemuck = { version = "1.18.0", features = ["derive"] }
+bytemuck = { version = "1.18.0", features = ["derive", "min_const_generics", "must_cast"] }
 cortex-m = { version = "0.7.7", features = [
     "critical-section-single-core",
     "inline-asm",
@@ -67,6 +67,7 @@ embassy-stm32 = { version = "0.2.0", features = [
 embassy-sync = "0.6.0"
 embassy-time = "0.4.0"
 embedded-cli = { git = "https://github.com/melvdlin/embedded-cli.git", version = "0.1.0" }
+embedded-graphics = "0.8.1"
 embedded-hal-async = "1.0.0"
 embedded-io-async = "0.6.1"
 futures-util = { version = "0.3.31", default-features = false }
