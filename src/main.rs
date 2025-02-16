@@ -305,6 +305,7 @@ async fn _main(spawner: Spawner) -> ! {
             MaybeUninit::fill(&mut memory[..PIXELS * 3], 0).try_into().unwrap();
         let buf = bytemuck::must_cast_mut::<_, [[[u8; 3]; COLS]; ROWS]>(buf);
         let pixbuf = bytemuck::must_cast_slice_mut::<_, [u8; 3]>(buf);
+        // hardfaults because FMC does not support unaligned access
         pixbuf.fill([0x57, 0x00, 0x7F]);
         ltdc.set_buffer(ltdc::LtdcLayer::Layer1, buf.as_ptr().cast()).await.unwrap();
 

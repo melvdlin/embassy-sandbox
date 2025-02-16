@@ -20,3 +20,5 @@ pub mod log;
 
 pub mod net;
 pub mod sdram;
+
+pub mod graphics;
