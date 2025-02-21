@@ -1,4 +1,5 @@
 use core::cmp;
+use core::iter::FusedIterator;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 use core::ops::Range;
@@ -6,6 +7,7 @@ use core::ops::RangeBounds;
 use core::ptr::NonNull;
 use core::slice;
 
+use bytemuck::NoUninit;
 use bytemuck::Pod;
 
 /// A row-major framebuffer backed by a byte slice.
@@ -16,15 +18,11 @@ pub struct Framebuffer<'buf, P> {
     cols: usize,
     /// # Safety:
     ///
-    /// `buf` must be valid for writes and `len` must be in-bounds.
-    /// See [core::ptr] for details.
-    ///
     /// Additionally, `len` must be equal to `rows * cols * size_of::<P>()`.
-    buf: NonNull<[u8]>,
-    _phantom: PhantomData<&'buf mut [P]>,
+    buf: Row<'buf, P>,
 }
 
-impl<'buf, P: Pod> Framebuffer<'buf, P> {
+impl<'buf, P> Framebuffer<'buf, P> {
     /// Create a new framebuffer backed by the provided buffer.
     ///
     /// # Panics
@@ -43,9 +41,10 @@ impl<'buf, P: Pod> Framebuffer<'buf, P> {
                 //
                 // buf is a valid, non-empty slice, and therefore not null
                 buf: unsafe {
-                    NonNull::new_unchecked(buf as *mut [MaybeUninit<u8>] as *mut [u8])
+                    Row::new(NonNull::new_unchecked(
+                        buf as *mut [MaybeUninit<u8>] as *mut [u8],
+                    ))
                 },
-                _phantom: PhantomData,
             }
         }
     }
@@ -55,7 +54,28 @@ impl<'buf, P: Pod> Framebuffer<'buf, P> {
         Self::new(&mut [], 0, 0)
     }
 
+    /// Get a single row of the framebuffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `row > nrows`
+    pub fn row(&mut self, row: usize) -> Row<'_, P> {
+        assert!(row < self.rows);
+
+        let ncols = self.cols;
+        let Framebuffer { rows, cols, buf } = self.rows(row..=row);
+
+        debug_assert_eq!(rows, 1);
+        debug_assert_eq!(cols, ncols);
+
+        buf
+    }
+
     /// Get a subslice of rows of the framebuffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `range` contains nonexistent rows.
     pub fn rows(&mut self, range: impl RangeBounds<usize>) -> Framebuffer<'_, P> {
         let Range { start, end } = slice::range(range, ..self.rows);
         let rows = end - start;
@@ -71,13 +91,12 @@ impl<'buf, P: Pod> Framebuffer<'buf, P> {
         //          = (end - start) * cols * size_of::<P>()
         //          = rows * cols * size_of::<P>()
         unsafe {
-            let buf_start = self.buf.as_non_null_ptr().add(start_byte);
-            let buf = NonNull::slice_from_raw_parts(buf_start, len);
+            let buf_start = self.buf.buf.as_non_null_ptr().add(start_byte);
+            let buf = Row::new(NonNull::slice_from_raw_parts(buf_start, len));
             Self {
                 rows,
                 cols: self.cols,
                 buf,
-                _phantom: PhantomData,
             }
         }
     }
@@ -86,42 +105,50 @@ impl<'buf, P: Pod> Framebuffer<'buf, P> {
     ///
     /// # Panics
     ///
-    /// Panics if `mid > rows`.
+    /// Panics if `mid > nrows`.
     pub fn split_at(&mut self, mid: usize) -> (Framebuffer<'_, P>, Framebuffer<'_, P>) {
         assert!(mid <= self.nrows());
         let mid_byte = mid * self.cols;
 
+        let (left, right): (Row<'_, P>, Row<'_, P>) = self.buf.split_at(mid_byte);
         // # Safety:
-        //
-        // We checked that `mid_byte` == `mid * cols` <= `rows * cols` == `buf.len()`.
-        let (left, right) = unsafe { self.buf.as_ptr().split_at_mut_unchecked(mid_byte) };
-        // # Safety:
-        //
-        // `left` and `right` are both derived from and in-bounds of a valid `NonNull`.
-        // Additionally, they are adjacent and thus non-overlapping,
-        // and therefore independently valid for writes.
         //
         // left.len()   == mid_byte
         //              == mid * cols
         // right.len()  == buf.len() - mid_byte
         //              == rows * cols - mid * cols
         //              == (rows - mid) * cols
-        unsafe {
-            (
-                Self {
-                    rows: mid,
-                    cols: self.cols,
-                    buf: NonNull::new_unchecked(left),
-                    _phantom: PhantomData,
-                },
-                Self {
-                    rows: self.rows - mid,
-                    cols: self.cols,
-                    buf: NonNull::new_unchecked(right),
-                    _phantom: PhantomData,
-                },
-            )
-        }
+
+        (
+            Framebuffer {
+                rows: mid,
+                cols: self.cols,
+                buf: left,
+            },
+            Framebuffer {
+                rows: self.rows - mid,
+                cols: self.cols,
+                buf: right,
+            },
+        )
+    }
+
+    /// Get a bytewise [`Iterator`]` over the framebuffer's content, starting at an index.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `start >= len * size_of::<P>()`.
+    pub fn bytes(&self, start: usize) -> Bytes<'_> {
+        self.buf.bytes(start)
+    }
+
+    /// Get an [`Iterator`]` over the framebuffer's content, starting at an index.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `start >= len`.
+    pub fn pixels(&self, start: usize) -> PixelData<'_, P> {
+        self.buf.pixels(start)
     }
 
     /// Returns the number of columns in the [`Framebuffer`].
@@ -136,12 +163,29 @@ impl<'buf, P: Pod> Framebuffer<'buf, P> {
 
     /// Returns the number of pixels in the [`Framebuffer`].
     pub const fn len(&self) -> usize {
-        self.buf.len()
+        self.rows * self.cols
     }
 
     /// Returns `true` if `len == 0`
     pub const fn is_empty(&self) -> bool {
         self.buf.is_empty()
+    }
+}
+
+impl<P: NoUninit> Framebuffer<'_, P> {
+    /// Performs a word/byte-aligned volatile copy
+    /// of the binary representation of `data` into this pixel.
+    pub fn write(&mut self, data: &[P]) {
+        self.buf.write(data)
+    }
+
+    /// Performs a word/byte-aligned volatile copy of `data` into this pixel.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `data.len() > size_of::<P>()`
+    pub fn write_bytes(&mut self, data: &[u8]) {
+        self.buf.write_bytes(data)
     }
 }
 
@@ -151,12 +195,121 @@ impl<P: Pod> Default for Framebuffer<'_, P> {
     }
 }
 
+/// A bytewise [`Iterator`] over the contents of a [`Framebuffer`].
+#[derive(Debug)]
+#[derive(Clone, Copy)]
+pub struct Bytes<'a> {
+    buf: *const [u8],
+    next: usize,
+    _phantom: PhantomData<&'a [u8]>,
+}
+
+impl Bytes<'_> {
+    /// # Safety:
+    ///
+    /// - `buf` must be valid for reads of `buf.len` bytes.
+    /// - `buf.len` must be in-bounds.
+    ///
+    /// See [`core::ptr`] for details.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `start >= buf.len`.
+    unsafe fn new(buf: *const [u8], start: usize) -> Self {
+        Self {
+            buf,
+            next: start,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl Iterator for Bytes<'_> {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.len() == 0 {
+            None
+        } else {
+            // # Safety:
+            //
+            // as per precondition in [`Framebuffer`],
+            // `buf` is valid for reads and `len` is in-bounds.
+            // `next` does not exceed `len`.
+            let byte = unsafe { self.buf.as_ptr().add(self.next).read_volatile() };
+            self.next += 1;
+            Some(byte)
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.len();
+        (len, Some(len))
+    }
+}
+
+impl ExactSizeIterator for Bytes<'_> {
+    fn len(&self) -> usize {
+        self.buf.len() - self.next
+    }
+}
+
+impl FusedIterator for Bytes<'_> {}
+/// An [`Iterator`] over the contents of a [`Framebuffer`].
+#[derive(Debug)]
+#[derive(Clone, Copy)]
+pub struct PixelData<'a, P> {
+    bytes: Bytes<'a>,
+    _phantom: PhantomData<P>,
+}
+
+impl<'a, P> PixelData<'a, P> {
+    fn new(bytes: Bytes<'a>) -> Self {
+        Self {
+            bytes,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<P: Pod> Iterator for PixelData<'_, P> {
+    type Item = P;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        debug_assert!(self.bytes.len().is_multiple_of(size_of::<P>()));
+
+        let mut next = P::zeroed();
+        let next_bytes = bytemuck::bytes_of_mut(&mut next);
+
+        for byte in next_bytes {
+            *byte = self.bytes.next()?
+        }
+
+        Some(next)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.len();
+        (len, Some(len))
+    }
+}
+
+impl<P: Pod> ExactSizeIterator for PixelData<'_, P> {
+    fn len(&self) -> usize {
+        self.bytes.len() / size_of::<P>()
+    }
+}
+
+impl<P: Pod> FusedIterator for PixelData<'_, P> {}
+
 /// A slice of a [`Framebuffer`] row.
 #[derive(Debug)]
 pub struct Row<'buf, P> {
     /// # Safety:
     ///
-    /// `buf` must be valid for writes and `len` must be in-bounds.
+    /// - `buf` must be valid for writes of [`buf.len`] bytes.
+    /// - `buf.len` must be in-bounds.
+    ///
     /// See [`core::ptr`] for details.
     buf: NonNull<[u8]>,
     _phantom: PhantomData<&'buf mut [P]>,
@@ -167,7 +320,9 @@ impl<P> Row<'_, P> {
     ///
     /// # Safety:
     ///
-    /// `buf` must be valid for writes and `len` must be in-bounds.
+    /// - `buf` must be valid for writes of [`buf.len`] bytes.
+    /// - `buf.len` must be in-bounds.
+    ///
     /// See [`core::ptr`] for details.
     const unsafe fn new(buf: NonNull<[u8]>) -> Self {
         Self {
@@ -219,10 +374,66 @@ impl<P> Row<'_, P> {
         // and therefore independently valid for writes.
         unsafe {
             (
-                Self::new(NonNull::new_unchecked(left)),
-                Self::new(NonNull::new_unchecked(right)),
+                Row::new(NonNull::new_unchecked(left)),
+                Row::new(NonNull::new_unchecked(right)),
             )
         }
+    }
+    /// Get a bytewise [`Iterator`]` over the row's content, starting at an index.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `start >= len * size_of::<P>()`.
+    pub fn bytes(&self, start: usize) -> Bytes<'_> {
+        assert!(start < self.buf.len());
+
+        // # Safety:
+        //
+        // `buf` is valid and in-bounds as per `Framebuffer` precondition.
+        unsafe { Bytes::new(self.buf.as_ptr(), start) }
+    }
+
+    /// Get an [`Iterator`]` over the row's content, starting at an index.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `start >= len`.
+    pub fn pixels(&self, start: usize) -> PixelData<'_, P> {
+        assert!(start < self.len());
+        PixelData::new(self.bytes(start * size_of::<P>()))
+    }
+}
+
+impl<P: NoUninit> Row<'_, P> {
+    /// Performs a word/byte-aligned volatile copy
+    /// of the binary representation of `data` into this pixel.
+    pub fn write(&mut self, data: &[P]) {
+        assert!(data.len() <= self.len());
+        let data_bytes = bytemuck::cast_slice(data);
+        // # Safety:
+        //
+        // - `self.buf` is valid for writes of `buf.len` bytes
+        // - we asserted that `data.len` does not exceed `self.len`,
+        //   and therefore that data_bytes.len does not exceed buf.len
+        unsafe { aligned_volatile_copy(data_bytes, self.buf.as_non_null_ptr()) };
+    }
+
+    /// Performs a word/byte-aligned volatile copy of `data` into this pixel.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `data.len() > size_of::<P>()`
+    pub fn write_bytes(&mut self, data: &[u8]) {
+        assert!(data.len() <= self.buf.len());
+        // # Safety:
+        //
+        // - `self.buf` is valid for writes of `buf.len` bytes
+        // - we asserted that `data.len` does not exceed `buf.len`
+        unsafe { aligned_volatile_copy(data, self.buf.as_non_null_ptr()) };
+    }
+
+    pub fn write_from_iter(&mut self, data: impl IntoIterator<Item = P>) {
+        todo!()
     }
 }
 
@@ -243,7 +454,7 @@ impl<P: Pod> Pixel<'_, P> {
         // # Safety:
         //
         // `self.buf` is valid for writes
-        // and point to an allocation at least as large as P
+        // and points to an allocation at least as large as P
         unsafe { aligned_volatile_copy(bytemuck::bytes_of(&data), self.buf) };
     }
 
@@ -256,9 +467,26 @@ impl<P: Pod> Pixel<'_, P> {
         assert!(data.len() <= size_of::<P>());
         // Safety:
         // `self.buf` is valid for writes
-        // and point to an allocation at least as large as `P`;
+        // and points to an allocation at least as large as `P`;
         // we asserted that `buf` is no longer than `size_of::<P>()`
         unsafe { aligned_volatile_copy(data, self.buf) };
+    }
+}
+
+/// # Safety:
+///
+/// if `src` is non-empty,
+/// then `dst` must be valid for writes and
+/// point to an allocation of at least `src.len()` bytes
+unsafe fn bytewise_volatile_copy(src: &[u8], dst: NonNull<u8>) {
+    for (&byte, offset) in src.iter().zip(0..) {
+        // # Safety:
+        //
+        // `offset` does not exceed src.len().
+        // As per preconditon, `dst` is thus valid for writes at `offset`.
+        unsafe {
+            dst.add(offset).write_volatile(byte);
+        }
     }
 }
 

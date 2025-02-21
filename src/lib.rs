@@ -7,6 +7,7 @@
 #![feature(slice_ptr_get)]
 #![feature(raw_slice_split)]
 #![feature(non_null_from_ref)]
+#![feature(unsigned_is_multiple_of)]
 
 #[cfg(any())]
 pub mod bitbang;
