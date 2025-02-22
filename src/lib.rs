@@ -8,6 +8,8 @@
 #![feature(raw_slice_split)]
 #![feature(non_null_from_ref)]
 #![feature(unsigned_is_multiple_of)]
+#![feature(iter_next_chunk)]
+#![feature(iter_array_chunks)]
 
 #[cfg(any())]
 pub mod bitbang;
