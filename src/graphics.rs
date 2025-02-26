@@ -1,4 +1,5 @@
 use core::cmp;
+use core::convert::Infallible;
 use core::iter;
 use core::iter::FusedIterator;
 use core::marker::PhantomData;
@@ -10,6 +11,9 @@ use core::slice;
 
 use bytemuck::NoUninit;
 use bytemuck::Pod;
+use embedded_graphics::pixelcolor::Rgb888;
+use embedded_graphics::prelude::*;
+use embedded_graphics::primitives::*;
 
 /// A row-major framebuffer backed by a byte slice.
 /// Access to the backing memory is volatile and word/byte-aligned.
@@ -161,7 +165,7 @@ impl<'buf, P> Framebuffer<'buf, P> {
     ///
     /// Panics if `start >= len`.
     pub fn pixels(&self, start: usize) -> PixelData<'_, P> {
-        self.buf.pixels(start)
+        self.buf.pixel_data(start)
     }
 
     /// Returns the number of columns in the [`Framebuffer`].
@@ -220,7 +224,7 @@ pub struct Row<'buf, P> {
     _phantom: PhantomData<&'buf mut [P]>,
 }
 
-impl<P> Row<'_, P> {
+impl<'buf, P> Row<'buf, P> {
     /// Create a new [`Row`] from a given byte slice.
     ///
     /// # Safety:
@@ -309,14 +313,56 @@ impl<P> Row<'_, P> {
         unsafe { Bytes::new(self.buf.as_ptr(), start) }
     }
 
-    /// Get an [`Iterator`]` over the row's pixel data, starting at an index.
+    /// Get an [`Iterator`]` over the row's pixel data, starting at an index,
+    /// or an empty ìterator if `start` is out of range.
+    pub fn pixel_data(&self, start: usize) -> PixelData<'_, P> {
+        if start >= self.len() {
+            return PixelData::empty();
+        }
+        PixelData::new(self.bytes(start * size_of::<P>()))
+    }
+
+    /// Get an [`Iterator`]` over the row's [`Pixel`]s, starting at an index,
+    /// or an empty ìterator if `start` is out of range.
+    pub fn pixels(self, start: usize) -> Pixels<'buf, P> {
+        if start >= self.len() {
+            return Pixels::empty();
+        }
+        Pixels { rest: todo!() }
+    }
+
+    /// Get a [`Pixel`] from this row, if the column index is in range.
+    pub fn try_pixel(&self, col: usize) -> Option<Pixel<'_, P>> {
+        if col >= self.len() {
+            return None;
+        }
+
+        Some(Pixel {
+            // # Safety:
+            //
+            //     `col` < `len`
+            // <=> `size_of::<P>()` * `col` < `size_of::<P>()` * `len`
+            // <=> `size_of::<P>()` * `col` < `buf.len`
+            buf: unsafe {
+                NonNull::new_unchecked(self.buf.as_mut_ptr().add(size_of::<P>() * col))
+            },
+            _phantom: PhantomData,
+        })
+    }
+
+    /// Get a [`Pixel`] from this row.
     ///
     /// # Panics
     ///
-    /// Panics if `start >= len`.
-    pub fn pixels(&self, start: usize) -> PixelData<'_, P> {
-        assert!(start < self.len());
-        PixelData::new(self.bytes(start * size_of::<P>()))
+    /// Panics if `col >= len`.
+    pub fn pixel(&self, col: usize) -> Pixel<'_, P> {
+        match self.try_pixel(col) {
+            | Some(pixel) => pixel,
+            | None => panic!(
+                "column index `{col}` is out of range of len `{}`",
+                self.len()
+            ),
+        }
     }
 }
 
@@ -367,6 +413,75 @@ impl<P: NoUninit> Row<'_, P> {
     }
 }
 
+impl<P> Dimensions for Row<'_, P> {
+    fn bounding_box(&self) -> embedded_graphics::primitives::Rectangle {
+        use embedded_graphics::prelude::*;
+        use embedded_graphics::primitives::*;
+
+        Rectangle {
+            top_left: Point { x: 0, y: 0 },
+            size: Size {
+                width: self.len() as u32,
+                height: 1,
+            },
+        }
+    }
+}
+
+impl DrawTarget for Row<'_, [u8; 3]> {
+    type Color = Rgb888;
+    type Error = Infallible;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = embedded_graphics::Pixel<Self::Color>>,
+    {
+        for Pixel(Point { x, y }, color) in pixels {
+            if y != 0 {
+                continue;
+            }
+            let Ok(col) = usize::try_from(x) else {
+                continue;
+            };
+            let Some(mut pixel) = self.try_pixel(col) else {
+                continue;
+            };
+            pixel.write(color.to_ne_bytes());
+        }
+
+        Ok(())
+    }
+
+    fn fill_contiguous<I>(
+        &mut self,
+        &Rectangle {
+            top_left: Point { x, y },
+            size: Size { width, height },
+        }: &Rectangle,
+        colors: I,
+    ) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Self::Color>,
+    {
+        if y != 0 {
+            return Ok(());
+        }
+        let Ok(col) = usize::try_from(x) else {
+            return Ok(());
+        };
+        if height == 0 {
+            return Ok(());
+        }
+
+        for (mut pixel, color) in
+            self.reborrow().pixels(col).take(width as usize).zip(colors)
+        {
+            pixel.write(color.to_be_bytes());
+        }
+        Ok(())
+    }
+}
+
 /// A bytewise [`Iterator`] over the contents of a [`Framebuffer`].
 #[derive(Debug)]
 #[derive(Clone, Copy)]
@@ -377,6 +492,15 @@ pub struct Bytes<'a> {
 }
 
 impl Bytes<'_> {
+    /// Get an empty [`Bytes`] iterator.
+    pub const fn empty() -> Self {
+        Self {
+            buf: &[],
+            next: 0,
+            _phantom: PhantomData,
+        }
+    }
+
     /// # Safety:
     ///
     /// - `buf` must be valid for reads of `buf.len` bytes.
@@ -393,6 +517,12 @@ impl Bytes<'_> {
             next: start,
             _phantom: PhantomData,
         }
+    }
+}
+
+impl Default for Bytes<'_> {
+    fn default() -> Self {
+        Self::empty()
     }
 }
 
@@ -436,11 +566,24 @@ pub struct PixelData<'a, P> {
 }
 
 impl<'a, P> PixelData<'a, P> {
+    /// Get an empty [`PixelData`] iterator.
+    pub const fn empty() -> Self {
+        Self {
+            bytes: Bytes::empty(),
+            _phantom: PhantomData,
+        }
+    }
+
     fn new(bytes: Bytes<'a>) -> Self {
         Self {
             bytes,
             _phantom: PhantomData,
         }
+    }
+}
+impl<P> Default for PixelData<'_, P> {
+    fn default() -> Self {
+        Self::empty()
     }
 }
 
@@ -476,6 +619,19 @@ impl<P: Pod> FusedIterator for PixelData<'_, P> {}
 
 pub struct Pixels<'buf, P> {
     rest: Option<Row<'buf, P>>,
+}
+
+impl<P> Pixels<'_, P> {
+    /// Get an empty [`Pixel`] iterator.
+    pub const fn empty() -> Self {
+        Self { rest: None }
+    }
+}
+
+impl<P> Default for Pixels<'_, P> {
+    fn default() -> Self {
+        Self::empty()
+    }
 }
 
 impl<'buf, P: NoUninit> Iterator for Pixels<'buf, P> {
