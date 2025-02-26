@@ -1,6 +1,5 @@
 use core::cmp;
 use core::convert::Infallible;
-use core::iter;
 use core::iter::FusedIterator;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
@@ -9,9 +8,11 @@ use core::ops::RangeBounds;
 use core::ptr::NonNull;
 use core::slice;
 
+use bytemuck::AnyBitPattern;
 use bytemuck::NoUninit;
-use bytemuck::Pod;
+use bytemuck::Zeroable;
 use embedded_graphics::pixelcolor::Rgb888;
+use embedded_graphics::pixelcolor::raw;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::*;
 
@@ -68,7 +69,7 @@ impl<'buf, P> Framebuffer<'buf, P> {
         assert!(row < self.rows);
 
         let ncols = self.cols;
-        let Framebuffer { rows, cols, buf } = self.rows(row..=row);
+        let Framebuffer { rows, cols, buf } = self.slice(row..=row);
 
         debug_assert_eq!(rows, 1);
         debug_assert_eq!(cols, ncols);
@@ -76,12 +77,23 @@ impl<'buf, P> Framebuffer<'buf, P> {
         buf
     }
 
+    /// Get a single row of the framebuffer, of `row` is in bounds.
+    pub fn try_row(self, row: usize) -> Option<Row<'buf, P>> {
+        let ncols = self.cols;
+        let Framebuffer { rows, cols, buf } = self.try_slice(row..=row)?;
+
+        debug_assert_eq!(rows, 1);
+        debug_assert_eq!(cols, ncols);
+
+        Some(buf)
+    }
+
     /// Get a subslice of rows of the framebuffer.
     ///
     /// # Panics
     ///
     /// Panics if `range` contains nonexistent rows.
-    pub fn rows(self, range: impl RangeBounds<usize>) -> Self {
+    pub fn slice(self, range: impl RangeBounds<usize>) -> Self {
         let Range { start, end } = slice::range(range, ..self.rows);
         let rows = end - start;
         let start_byte = start * self.cols * size_of::<P>();
@@ -103,6 +115,31 @@ impl<'buf, P> Framebuffer<'buf, P> {
                 cols: self.cols,
                 buf,
             }
+        }
+    }
+    /// Get a subslice of rows of the framebuffer, if `range` is in bounds.
+    pub fn try_slice(self, range: impl RangeBounds<usize>) -> Option<Self> {
+        let Range { start, end } = slice::try_range(range, ..self.rows)?;
+        let rows = end - start;
+        let start_byte = start * self.cols * size_of::<P>();
+        let end_byte = end * self.cols * size_of::<P>();
+        let len = end_byte - start_byte;
+
+        // # Safety:
+        //
+        // - `buf` is derived from and in-bounds of `self.buf`.
+        // - `len`  = end_byte - start_byte
+        //          = end * cols * size_of::<P>() - start * cols * size_of::<P>()
+        //          = (end - start) * cols * size_of::<P>()
+        //          = rows * cols * size_of::<P>()
+        unsafe {
+            let buf_start = self.buf.buf.as_non_null_ptr().add(start_byte);
+            let buf = Row::new(NonNull::slice_from_raw_parts(buf_start, len));
+            Some(Self {
+                rows,
+                cols: self.cols,
+                buf,
+            })
         }
     }
 
@@ -150,22 +187,30 @@ impl<'buf, P> Framebuffer<'buf, P> {
         )
     }
 
-    /// Get a bytewise [`Iterator`]` over the framebuffer's content, starting at an index.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `start >= len * size_of::<P>()`.
+    /// Get a bytewise [`Iterator`] over the framebuffer's content, starting at an index.
+    /// The resulting iterator is empty if `start` is out of bounds.
     pub fn bytes(&self, start: usize) -> Bytes<'_> {
         self.buf.bytes(start)
     }
 
-    /// Get an [`Iterator`]` over the framebuffer's pixel data, starting at an index.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `start >= len`.
-    pub fn pixels(&self, start: usize) -> PixelData<'_, P> {
+    /// Get an [`Iterator`] over the framebuffer's pixel data, starting at an index.
+    /// The resulting iterator is empty if `start` is out of bounds.
+    pub fn pixel_data(&self, start: usize) -> PixelData<'_, P> {
         self.buf.pixel_data(start)
+    }
+
+    /// Get an [`Iterator`] over the framebuffer's [`Row`]s, starting at an index.
+    /// The resulting iterator is empty if `start` is out of bounds.
+    pub fn rows(self, start: usize) -> Rows<'buf, P> {
+        Rows {
+            rest: self.try_slice(start..),
+        }
+    }
+
+    /// Get an [`Iterator`] over the framebuffer's [`Pixel`]s, starting at an index.
+    /// The resulting iterator  is empty if `start` is out of bounds.
+    pub fn pixels(self, start: usize) -> Pixels<'buf, P> {
+        self.buf.pixels(start)
     }
 
     /// Returns the number of columns in the [`Framebuffer`].
@@ -206,11 +251,128 @@ impl<P: NoUninit> Framebuffer<'_, P> {
     }
 }
 
-impl<P: Pod> Default for Framebuffer<'_, P> {
+impl<P> Default for Framebuffer<'_, P> {
     fn default() -> Self {
         Self::empty()
     }
 }
+
+impl<P> Dimensions for Framebuffer<'_, P> {
+    fn bounding_box(&self) -> Rectangle {
+        Rectangle {
+            top_left: Point { x: 0, y: 0 },
+            size: Size {
+                width: u32::try_from(self.cols)
+                    .expect("framebuffer width out of bounds for u32"),
+                height: u32::try_from(self.rows)
+                    .expect("framebuffer height out of bounds for u32"),
+            },
+        }
+    }
+}
+
+impl DrawTarget for Framebuffer<'_, [u8; 3]> {
+    type Color = Rgb888;
+    type Error = Infallible;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = embedded_graphics::Pixel<Self::Color>>,
+    {
+        for Pixel(Point { x, y }, color) in pixels {
+            let (Ok(row), Ok(col)) = (usize::try_from(y), usize::try_from(x)) else {
+                continue;
+            };
+
+            let framebuf = self.reborrow();
+            let Some(row) = framebuf.try_row(row) else {
+                continue;
+            };
+            let Some(mut pixel) = row.try_pixel(col) else {
+                continue;
+            };
+
+            pixel.write(color.to_ne_bytes());
+        }
+
+        Ok(())
+    }
+
+    fn fill_contiguous<I>(
+        &mut self,
+        &Rectangle {
+            top_left: Point { x, y },
+            size: Size { width, height },
+        }: &Rectangle,
+        colors: I,
+    ) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Self::Color>,
+    {
+        let (Ok(row), Ok(col)) = (usize::try_from(y), usize::try_from(x)) else {
+            return Ok(());
+        };
+        let width =
+            usize::try_from(width).expect("framebuffer width out of bounds for u32");
+        let height =
+            usize::try_from(height).expect("framebuffer height out of bounds for u32");
+
+        // for (mut pixel, color) in self
+        //     .reborrow()
+        //     .rows(row)
+        //     .take(height)
+        //     .flat_map(|row| row.pixels(col).take(width))
+        //     .zip(colors)
+        // {
+        //     pixel.write(color.to_be_bytes());
+        // }
+
+        let mut colors = colors.into_iter().map(raw::ToBytes::to_ne_bytes);
+        for row in self.reborrow().rows(row).take(height) {
+            row.try_slice(col..)
+                .unwrap_or(Row::empty())
+                .write_from_iter(colors.by_ref().take(width));
+        }
+
+        Ok(())
+    }
+}
+
+/// An [`Iterator`] over the [`Row`]s of a [`Framebuffer`].
+pub struct Rows<'buf, P> {
+    rest: Option<Framebuffer<'buf, P>>,
+}
+
+impl<P> Rows<'_, P> {
+    /// Get an empty [`Row`] iterator.
+    pub const fn empty() -> Self {
+        Self { rest: None }
+    }
+}
+
+impl<P> Default for Rows<'_, P> {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl<'buf, P> Iterator for Rows<'buf, P> {
+    type Item = Row<'buf, P>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.rest.take() {
+            | None => None,
+            | Some(rest) if rest.is_empty() => None,
+            | Some(rest) => {
+                let (Framebuffer { buf, .. }, tail) = rest.split_at(1);
+                self.rest = Some(tail);
+
+                Some(buf)
+            }
+        }
+    }
+}
+
 /// A slice of a [`Framebuffer`] row.
 #[derive(Debug)]
 pub struct Row<'buf, P> {
@@ -236,6 +398,14 @@ impl<'buf, P> Row<'buf, P> {
     const unsafe fn new(buf: NonNull<[u8]>) -> Self {
         Self {
             buf,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Create an empty [`Row`].
+    pub const fn empty() -> Self {
+        Self {
+            buf: NonNull::from_mut(&mut []),
             _phantom: PhantomData,
         }
     }
@@ -271,6 +441,18 @@ impl<'buf, P> Row<'buf, P> {
         }
     }
 
+    /// Get a subslice of the [`Framebuffer`] [`Row`], if `range` is in bounds.
+    pub fn try_slice(self, range: impl RangeBounds<usize>) -> Option<Self> {
+        let Range { start, end } = slice::try_range(range, ..self.len())?;
+        let len = end - start;
+        // # Safety:
+        // We checked that `range` is in-bounds of `self.buf`.
+        unsafe {
+            let start = self.buf.as_non_null_ptr().add(start * size_of::<P>());
+            Some(Self::new(NonNull::slice_from_raw_parts(start, len)))
+        }
+    }
+
     /// Divide `self` into two adjacent subslices at a pixel index.
     ///
     /// The first will contain all indices from `[0, mid)` (excluding
@@ -299,13 +481,12 @@ impl<'buf, P> Row<'buf, P> {
         }
     }
 
-    /// Get a bytewise [`Iterator`]` over the row's content, starting at an index.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `start >= len * size_of::<P>()`.
+    /// Get a bytewise [`Iterator`] over the row's content, starting at an index.
+    /// The resulting iterator  is empty if `start` is out of bounds.
     pub fn bytes(&self, start: usize) -> Bytes<'_> {
-        assert!(start < self.buf.len());
+        if start >= self.buf.len() {
+            return Bytes::empty();
+        }
 
         // # Safety:
         //
@@ -313,8 +494,8 @@ impl<'buf, P> Row<'buf, P> {
         unsafe { Bytes::new(self.buf.as_ptr(), start) }
     }
 
-    /// Get an [`Iterator`]` over the row's pixel data, starting at an index,
-    /// or an empty ìterator if `start` is out of range.
+    /// Get an [`Iterator`] over the row's pixel data, starting at an index.
+    /// The resulting iterator  is empty if `start` is out of bounds.
     pub fn pixel_data(&self, start: usize) -> PixelData<'_, P> {
         if start >= self.len() {
             return PixelData::empty();
@@ -322,13 +503,12 @@ impl<'buf, P> Row<'buf, P> {
         PixelData::new(self.bytes(start * size_of::<P>()))
     }
 
-    /// Get an [`Iterator`]` over the row's [`Pixel`]s, starting at an index,
-    /// or an empty ìterator if `start` is out of range.
+    /// Get an [`Iterator`] over the row's [`Pixel`]s, starting at an index.
+    /// The resulting iterator  is empty if `start` is out of bounds.
     pub fn pixels(self, start: usize) -> Pixels<'buf, P> {
-        if start >= self.len() {
-            return Pixels::empty();
+        Pixels {
+            rest: self.try_slice(start..),
         }
-        Pixels { rest: todo!() }
     }
 
     /// Get a [`Pixel`] from this row, if the column index is in range.
@@ -413,6 +593,12 @@ impl<P: NoUninit> Row<'_, P> {
     }
 }
 
+impl<P> Default for Row<'_, P> {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 impl<P> Dimensions for Row<'_, P> {
     fn bounding_box(&self) -> embedded_graphics::primitives::Rectangle {
         use embedded_graphics::prelude::*;
@@ -421,7 +607,8 @@ impl<P> Dimensions for Row<'_, P> {
         Rectangle {
             top_left: Point { x: 0, y: 0 },
             size: Size {
-                width: self.len() as u32,
+                width: u32::try_from(self.len())
+                    .expect("framebuffer width out of bounds for u32"),
                 height: 1,
             },
         }
@@ -472,12 +659,19 @@ impl DrawTarget for Row<'_, [u8; 3]> {
         if height == 0 {
             return Ok(());
         }
+        let width =
+            usize::try_from(width).expect("framebuffer width out of bounds for u32");
 
-        for (mut pixel, color) in
-            self.reborrow().pixels(col).take(width as usize).zip(colors)
-        {
-            pixel.write(color.to_be_bytes());
-        }
+        // for (mut pixel, color) in
+        //     self.reborrow().pixels(col).take(width as usize).zip(colors)
+        // {
+        //     pixel.write(color.to_be_bytes());
+        // }
+
+        self.reborrow().try_slice(col..).unwrap_or(Row::empty()).write_from_iter(
+            colors.into_iter().map(raw::ToBytes::to_ne_bytes).take(width),
+        );
+
         Ok(())
     }
 }
@@ -557,6 +751,7 @@ impl ExactSizeIterator for Bytes<'_> {
 }
 
 impl FusedIterator for Bytes<'_> {}
+
 /// An [`Iterator`] over the contents of a [`Framebuffer`].
 #[derive(Debug)]
 #[derive(Clone, Copy)]
@@ -581,13 +776,17 @@ impl<'a, P> PixelData<'a, P> {
         }
     }
 }
+
 impl<P> Default for PixelData<'_, P> {
     fn default() -> Self {
         Self::empty()
     }
 }
 
-impl<P: Pod> Iterator for PixelData<'_, P> {
+impl<P> Iterator for PixelData<'_, P>
+where
+    P: Zeroable + NoUninit + AnyBitPattern,
+{
     type Item = P;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -609,14 +808,18 @@ impl<P: Pod> Iterator for PixelData<'_, P> {
     }
 }
 
-impl<P: Pod> ExactSizeIterator for PixelData<'_, P> {
+impl<P> ExactSizeIterator for PixelData<'_, P>
+where
+    P: Zeroable + NoUninit + AnyBitPattern,
+{
     fn len(&self) -> usize {
         self.bytes.len() / size_of::<P>()
     }
 }
 
-impl<P: Pod> FusedIterator for PixelData<'_, P> {}
+impl<P> FusedIterator for PixelData<'_, P> where P: Zeroable + NoUninit + AnyBitPattern {}
 
+/// An [`Iterator`] over the Pixels in a [`Framebuffer`].
 pub struct Pixels<'buf, P> {
     rest: Option<Row<'buf, P>>,
 }
@@ -766,6 +969,7 @@ unsafe fn aligned_volatile_copy(src: &[u8], dst: NonNull<u8>) {
 ///
 /// - `dst` must be write-valid
 /// - `dst.len` must be in-bounds of the underlying allocated object.
+#[allow(unused)]
 unsafe fn bytewise_volatile_copy_from_iter(
     src: impl IntoIterator<Item = u8>,
     dst: NonNull<[u8]>,
