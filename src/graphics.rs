@@ -232,6 +232,11 @@ impl<'buf, P> Framebuffer<'buf, P> {
     pub const fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }
+
+    /// Returns a write-valid pointer to the backing memory.
+    pub const fn as_ptr(&self) -> NonNull<[u8]> {
+        self.buf.as_ptr()
+    }
 }
 
 impl<P: NoUninit> Framebuffer<'_, P> {
@@ -543,6 +548,11 @@ impl<'buf, P> Row<'buf, P> {
                 self.len()
             ),
         }
+    }
+
+    /// Returns a write-valid pointer to the backing memory.
+    pub const fn as_ptr(&self) -> NonNull<[u8]> {
+        self.buf
     }
 }
 
