@@ -4,9 +4,13 @@
 #![feature(maybe_uninit_fill)]
 #![feature(iter_array_chunks)]
 #![feature(array_chunks)]
+#![feature(breakpoint)]
 
+#[allow(unused_imports)]
+use core::arch::breakpoint;
 use core::mem::MaybeUninit;
 use core::num::NonZeroU16;
+use core::sync::atomic::AtomicUsize;
 
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
@@ -24,6 +28,7 @@ use embassy_stm32::rcc;
 use embassy_stm32::time::Hertz;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+use embassy_sync::once_lock::OnceLock;
 use embassy_sync::watch;
 use embassy_sync::watch::Watch;
 use embassy_time::Duration;
@@ -74,6 +79,8 @@ async fn _main(spawner: Spawner) -> ! {
     let p = embassy_stm32::init(config);
     let mut _button =
         embassy_stm32::exti::ExtiInput::new(p.PA0, p.EXTI0, gpio::Pull::Down);
+    let mut lcd_reset_pin =
+        gpio::Output::new(p.PJ15, gpio::Level::High, gpio::Speed::High);
 
     // 128 Mib
     const SDRAM_SIZE: usize = (128 / 8) << 20;
@@ -92,6 +99,7 @@ async fn _main(spawner: Spawner) -> ! {
     let seeds = core::array::from_fn(|_| rng.next_u64());
 
     static DHCP_UP: watch::Watch<ThreadModeRawMutex, (), 3> = watch::Watch::new();
+    static LOG_CHANNEL: log::Channel<ThreadModeRawMutex, 1024> = log::Channel::new();
     let dhcp_up_sender = DHCP_UP.dyn_sender();
     let net = async {
         let stack = net::stack_setup(
@@ -114,7 +122,6 @@ async fn _main(spawner: Spawner) -> ! {
         )
         .await;
 
-        static LOG_CHANNEL: log::Channel<ThreadModeRawMutex, 1024> = log::Channel::new();
         static LOG_UP: Watch<ThreadModeRawMutex, bool, 3> = Watch::new();
         let log_up_sender = LOG_UP.dyn_sender();
 
@@ -149,11 +156,13 @@ async fn _main(spawner: Spawner) -> ! {
     // dsi.disable_wrapper_dsi();
     // dsi.disable();
 
-    {
+    let disp = async {
         rcc::enable_and_reset::<peripherals::DSIHOST>();
         let dsihost = embassy_stm32::pac::DSIHOST;
 
         // === global config ===
+
+        // == clock and timing config ==
 
         // enable voltage regulator
         dsihost.wrpcr().modify(|w| w.set_regen(true));
@@ -165,8 +174,8 @@ async fn _main(spawner: Spawner) -> ! {
         let f_vco = Hertz::mhz(1_000);
         let hs_clk = Hertz::mhz(500);
         let pll_idf = 1_u32;
-        let pll_ndiv = f_vco * pll_idf / hse_freq / 2;
-        let pll_odf = hs_clk / (f_vco / 2_u32);
+        let pll_ndiv = f_vco / ((hse_freq * 2_u32) / pll_idf);
+        let pll_odf = (f_vco / 2_u32) / hs_clk;
 
         debug_assert!((10..=125).contains(&pll_ndiv));
         debug_assert!((1..=7).contains(&pll_idf));
@@ -183,6 +192,23 @@ async fn _main(spawner: Spawner) -> ! {
             yield_now().await;
         }
 
+        // enable D-PHY digital section and clock lane module
+        dsihost.pctlr().modify(|w| {
+            w.set_den(true);
+            w.set_cke(true);
+        });
+
+        // set clock lane control to auto and enable HS clock lane
+        dsihost.clcr().modify(|w| {
+            w.set_acr(false);
+            w.set_dpcc(true);
+        });
+
+        // configure number of active data lanes
+        // 0 = lane 0
+        // 1 = lanes 0 and 1 (default)
+        dsihost.pconfr().modify(|w| w.set_nl(1));
+
         // lane_byte_clk
         //  = fvco / (2 * odf * 8)
         //  = 1 GHz / (2 * 1 * 8)
@@ -193,23 +219,9 @@ async fn _main(spawner: Spawner) -> ! {
         //  <=> TXECKDIV > lane_byte_clk / 20 MHz
         //  <=> TXECKDIV > (62.5 / 20) MHz
         //  <=> TXECKDIV > 3.125
-        dsihost.ccr().modify(|w| w.set_txeckdiv(4));
-
-        // configure number of active data lanes
-        // 0 = lane 0
-        // 1 = lanes 0 and 1 (default)
-        // dsihost.pconfr().modify(|w| w.set_nl(1));
-
-        // enable D-PHY digital section and clock lane module
-        dsihost.pctlr().modify(|w| {
-            w.set_den(true);
-            w.set_cke(true);
-        });
-
-        // set clock lane control to auto and enable HS clock lane
-        dsihost.clcr().modify(|w| {
-            w.set_acr(true);
-            w.set_dpcc(true);
+        // Timeout clock div = 1
+        dsihost.ccr().modify(|w| {
+            w.set_txeckdiv(4);
         });
 
         // set unit interval in multiples of .25 ns
@@ -217,6 +229,12 @@ async fn _main(spawner: Spawner) -> ! {
         debug_assert!(unit_interval <= 0b11_1111);
         dsihost.wpcr0().modify(|w| w.set_uix4(unit_interval as u8));
 
+        // set stop wait time
+        // (minimum wait time before requesting a HS transmission after stop state)
+        // minimum is 10 (lanebyteclk cycles?)
+        dsihost.pconfr().modify(|w| w.set_sw_time(10));
+
+        // flow control config ==
         dsihost.pcr().modify(|w| {
             // enable EoT packet transmission
             // w.set_ettxe(true);
@@ -230,20 +248,6 @@ async fn _main(spawner: Spawner) -> ! {
             // w.set_crcrxe(true);
         });
 
-        // set DSI wrapper to 24 bit color
-        dsihost.wcfgr().modify(|w| w.set_colmux(0b101));
-        // set DSI host to use 24 bit color
-        dsihost.lcolcr().modify(|w| w.set_colc(0b101));
-
-        // configure HSYNC, VSYNC and DATA ENABLE polarity
-        // to match LTDC polarity config
-        // default: all active high (0)
-        // dsihost.lpcr().modify(|w| {
-        //     w.set_hsp(false);
-        //     w.set_vsp(false);
-        //     w.set_dep(false);
-        // });
-
         // === adapted command mode config ===
 
         // set DSI host to adapted command mode
@@ -251,10 +255,10 @@ async fn _main(spawner: Spawner) -> ! {
         // set DSI wrapper to adapted command mode
         dsihost.wcfgr().modify(|w| w.set_dsim(true));
 
-        // set stop wait time
-        // (minimum wait time before requesting a HS transmission after stop state)
-        // minimum is 10 (lanebyteclk cycles?)
-        dsihost.pconfr().modify(|w| w.set_sw_time(10));
+        // set DSI wrapper to 24 bit color
+        dsihost.wcfgr().modify(|w| w.set_colmux(0b101));
+        // set DSI host to use 24 bit color
+        dsihost.lcolcr().modify(|w| w.set_colc(0b101));
 
         // set size in pixels of long write commands
         // DSI host pixel FIFO is 960 * 32-bit words
@@ -262,23 +266,43 @@ async fn _main(spawner: Spawner) -> ! {
         //  => max command size = 960 * 32/24 = 1280 px
         dsihost.lccr().modify(|w| w.set_cmdsize(960 * 32 / 24));
 
-        // set LTDC halt polarity in accordance with LPCR:
-        // LPCR VSYNC active high <=> LTDC halt on rising edge
-        // default: halt on falling edge (0)
-        // dsihost.wcfgr().modify(|w| w.set_vspol(true));
+        // configure HSYNC, VSYNC and DATA ENABLE polarity
+        // to match LTDC polarity config
+        // default: all active high (0)
+        dsihost.lpcr().modify(|w| {
+            w.set_dep(false);
+            w.set_vsp(false);
+            w.set_hsp(false);
+        });
 
-        // configure tearing effect
-        // TE effect over link
-        //  => acknowledge request must be enabled
-        //  && bus turnaround in PCR must be enabled
-        dsihost.wcfgr().modify(|_w| {
+        dsihost.wcfgr().modify(|w| {
+            // configure tearing effect
+            // TE effect over link
+            //  => acknowledge request must be enabled
+            //  && bus turnaround in PCR must be enabled
             // tearing effect over pin
-            // w.set_tesrc(true);
+            // 0: in-link (default)
+            // 1: external pin
+            w.set_tesrc(false);
+
             // polarity depends on display TE pin polarity
             // 0: rising (default)
-            // 0: falling
-            // w.set_tepol(true);
+            // 1: falling
+            w.set_tepol(false);
+
+            // configure auto refresh
+            // auto refresh:   WCR_LTDCEN is set automatically on TE event
+            // manual refresh: WCR_LTDCEN must be set by software on TE event (default)
+            w.set_ar(false);
+
+            // configure VSync polarity
+            // set LTDC halt polarity in accordance with LPCR:
+            // LPCR VSYNC active high <=> LTDC halt on rising edge
+            // 0: halt on falling edge (default)
+            // 1: halt on rising edge
+            w.set_vspol(false);
         });
+
         dsihost.cmcr().modify(|w| {
             // enable TE ack request
             // default: false
@@ -292,11 +316,6 @@ async fn _main(spawner: Spawner) -> ! {
             w.set_erie(true);
         });
 
-        // configure refresh mode
-        // auto refresh:   WCR_LTDCEN is set automatically on TE event
-        // manual refresh: WCR_LTDCEN must be set by software on TE event (default)
-        // dsihost.wcfgr().modify(|w| w.set_ar(true));
-
         // command transmission mode
         // commands may be transmitted in either high-speed or low-power
         // default: high-speed (0)
@@ -304,32 +323,36 @@ async fn _main(spawner: Spawner) -> ! {
         // some displays require init commands to be sent in LP mode
         dsihost.cmcr().modify(|w| {
             // generic short write zero params
-            w.set_gsw0tx(true);
+            w.set_gsw0tx(false);
             // generic short write one param
-            w.set_gsw1tx(true);
+            w.set_gsw1tx(false);
             // generic short write two params
-            w.set_gsw2tx(true);
+            w.set_gsw2tx(false);
             // generic short read zero params
-            w.set_gsr0tx(true);
+            w.set_gsr0tx(false);
             // generic short read one param
-            w.set_gsr1tx(true);
+            w.set_gsr1tx(false);
             // generic short read two params
-            w.set_gsr2tx(true);
+            w.set_gsr2tx(false);
             // generic long write
-            w.set_glwtx(true);
+            w.set_glwtx(false);
             // DCS short write zero params
-            w.set_dsw0tx(true);
+            w.set_dsw0tx(false);
             // DCS short write one param
-            w.set_dsw1tx(true);
+            w.set_dsw1tx(false);
             // DCS short read zero params
-            w.set_dsr0tx(true);
+            w.set_dsr0tx(false);
             // DCS long write
-            w.set_dlwtx(true);
+            w.set_dlwtx(false);
             // maximum read packet size
-            w.set_mrdps(true);
+            w.set_mrdps(false);
         });
 
-        dsihost.cr().modify(|w| w.set_en(true));
+        // request an acknowledge after every sent command
+        // default: false
+        dsihost.cmcr().modify(|w| w.set_are(false));
+
+        // dsihost.cr().modify(|w| w.set_en(true));
         otm8009a::init(
             dsihost,
             otm8009a::Config {
@@ -339,6 +362,8 @@ async fn _main(spawner: Spawner) -> ! {
                 rows: NonZeroU16::new(otm8009a::HEIGHT).expect("height must be nonzero"),
                 cols: NonZeroU16::new(otm8009a::WIDTH).expect("width must be nonzero"),
             },
+            &mut lcd_reset_pin,
+            &mut _button,
         )
         .await;
 
@@ -369,8 +394,8 @@ async fn _main(spawner: Spawner) -> ! {
             v_front_porch: 1,
             h_sync: 1,
             v_sync: 1,
-            h_sync_polarity: ltdc::PolarityActive::ActiveLow,
-            v_sync_polarity: ltdc::PolarityActive::ActiveLow,
+            h_sync_polarity: ltdc::PolarityActive::ActiveHigh,
+            v_sync_polarity: ltdc::PolarityActive::ActiveHigh,
             data_enable_polarity: ltdc::PolarityActive::ActiveLow,
             pixel_clock_polarity: ltdc::PolarityEdge::RisingEdge,
         });
@@ -403,10 +428,6 @@ async fn _main(spawner: Spawner) -> ! {
             None,
         );
 
-        // request an acknowledge after every sent command
-        // default: false
-        // dsihost.cmcr().modify(|w| w.set_are(false))
-
         dsihost.cr().modify(|w| w.set_en(true));
         dsihost.wcr().modify(|w| w.set_dsien(true));
         ltdc.enable();
@@ -419,9 +440,9 @@ async fn _main(spawner: Spawner) -> ! {
         ltdc.set_buffer(ltdc::LtdcLayer::Layer1, framebuf.as_ptr().as_ptr().cast())
             .await
             .unwrap();
-    }
+    };
 
-    join(blink, net).await.0
+    join3(blink, net, disp).await.0
 }
 
 async fn blink(
@@ -517,34 +538,37 @@ fn config() -> (embassy_stm32::Config, Hertz, Hertz) {
             mode: HseMode::Oscillator,
         });
         rcc.pll = Some(Pll {
-            // PLL in == 16 MHz / 8 == 2 MHz
-            prediv: PllPreDiv::DIV8,
-            // PLL out == 2 MHz * 64 == 128 MHz
-            mul: PllMul(64),
-            // SYSCLK == PLL out / divp == 128 MHz / 2 == 64 MHz
+            // PLL in == 25 MHz / 25 == 2 MHz
+            prediv: PllPreDiv::DIV25,
+            // PLL out == 1 MHz * 432 == 432 MHz
+            mul: PllMul(432),
+            // SYSCLK == PLL out / divp == 432 MHz / 2 == 216 MHz
             divp: Some(PllPDiv::DIV2),
             divq: None,
             divr: None,
         });
         rcc.pllsai = Some(Pll {
-            // PLL in == 16 MHz / 8 == 2 MHz
-            prediv: PllPreDiv::DIV8,
-            // PLL out == 2 MHz * 64 == 128 MHz
-            mul: PllMul(64),
+            // PLL in == 25 MHz / 25 == 1 MHz
+            prediv: PllPreDiv::DIV25,
+            // PLL out == 1 MHz * 192 == 192 MHz
+            mul: PllMul(192),
             divp: None,
             divq: None,
-            // LTDC clock == PLLSAIR == PLL out / divr == 128 MHz / 4 == 32 MHz
-            divr: Some(PllRDiv::DIV4),
+            // LTDC clock == PLLSAIR / 2
+            //            == PLL out / divr / 2
+            //            == 192 MHz / 2 / 2
+            //            == 48 MHz
+            divr: Some(PllRDiv::DIV2),
         });
-        rcc.pll_src = PllSource::HSI;
+        rcc.pll_src = PllSource::HSE;
         rcc.sys = Sysclk::PLL1_P;
         // APB1 clock must not be faster than 54 MHz
-        rcc.apb1_pre = APBPrescaler::DIV2;
-        // AHB clock == SYSCLK = 64MHz
-        rcc.ahb_pre = AHBPrescaler::DIV1;
+        rcc.apb1_pre = APBPrescaler::DIV4;
+        // AHB clock == SYSCLK / 2 = 108MHz
+        rcc.ahb_pre = AHBPrescaler::DIV2;
         rcc
     };
-    (config, Hertz::mhz(64), hse_freq)
+    (config, Hertz::mhz(216), hse_freq)
 }
 
 // D0  = PC9
@@ -553,12 +577,20 @@ fn config() -> (embassy_stm32::Config, Hertz, Hertz) {
 // D3  = PD13
 // sck = PB2
 // nss = DMA1
-
 #[allow(dead_code)]
 mod otm8009a {
+    #[allow(unused_imports)]
+    use core::arch::breakpoint;
+    use core::array;
+    use core::future;
     use core::num::NonZeroU16;
+    use core::sync::atomic;
 
+    use embassy_stm32::exti::ExtiInput;
+    use embassy_stm32::gpio::Output;
+    use embassy_stm32::pac::dsihost::Dsihost;
     use embassy_time::Timer;
+    use embassy_time::WithTimeout;
 
     use crate::dsi;
 
@@ -592,53 +624,49 @@ mod otm8009a {
         _70 = 7,
     }
 
-    pub async fn init(dsihost: embassy_stm32::pac::dsihost::Dsihost, config: Config) {
-        const PARAM_SHIFT: u8 = 0x00;
+    pub async fn init(
+        dsi: embassy_stm32::pac::dsihost::Dsihost,
+        config: Config,
+        reset_pin: &mut Output<'_>,
+        _button: &mut ExtiInput<'_>,
+    ) {
+        use dsi::*;
+        let transactions = &dsi::TRANSACTIONS;
+        let _transactions = transactions;
 
-        macro_rules! write_reg {
-            ($dsihost:ident[$addr:expr] = [$($args:expr),* $(,)?]) => {
-                async {
-                    const PARAM_SHIFT: u8 = 0x00;
-                    let [base, offset] =
-                        core::convert::identity::<u16>($addr).to_le_bytes();
-                    // shift base address by offset
-                    $crate::dsi::dcs_write($dsihost, 0, PARAM_SHIFT, [offset]).await;
-                    // write args
-                    $crate::dsi::dcs_write($dsihost, 0, base, [$($args,)*]).await;
-                }
-            };
-            ($dsihost:ident[$addr:expr] = [$element:expr; $count:expr]) => {
-                async {
-                    const PARAM_SHIFT: u8 = 0x00;
-                    const ADDR: [u8; 2] = core::convert::identity::<u16>($addr).to_le_bytes();
-                    const BASE: u8 = ADDR[0];
-                    const OFFSET: u8 = ADDR[1];
-                    // shift base address by offset
-                    $crate::dsi::dcs_write($dsihost, 0, PARAM_SHIFT, [OFFSET]).await;
-                    // write args
-                    $crate::dsi::dcs_write($dsihost, 0, BASE, [$element; $count]
-                        // const {
-                        // let mut args = [$element; $count + 1];
-                        // args[0] = BASE;
-                        // args
-                    // }
-                    ).await;
-                }
-            };
-            ($dsihost:ident[$addr:expr] = $arg:expr) => {
-                write_reg!($dsihost[$addr] = [$arg])
-            };
+        async fn write_reg(dsi: Dsihost, addr: u16, data: &[u8]) {
+            let [base, offset] = addr.to_be_bytes();
+            dcs_write(dsi, 0, 0x00, [offset]).await;
+            dcs_write(dsi, 0, base, data.iter().copied()).await;
         }
+
+        async fn read_reg(dsi: Dsihost, addr: u16, dst: &mut [u8]) {
+            let [base, offset] = addr.to_be_bytes();
+            dcs_write(dsi, 0, 0x00, [offset]).await;
+            dcs_read(dsi, 0, base, dst).await;
+        }
+
+        // reset active low
+        reset_pin.set_low();
+        Timer::after_millis(20).await;
+        reset_pin.set_high();
+        Timer::after_millis(10).await;
+
+        dsi.cr().write(|w| w.set_en(true));
+        dsi.wcr().write(|w| w.set_dsien(true));
 
         let mut id = [0; 3];
         let [id1, id2, id3] = &mut id;
-        dsi::dcs_read(dsihost, 0, 0xda, core::slice::from_mut(id1)).await;
-        dsi::dcs_read(dsihost, 0, 0xdb, core::slice::from_mut(id2)).await;
-        dsi::dcs_read(dsihost, 0, 0xdc, core::slice::from_mut(id3)).await;
+        dcs_read(dsi, 0, 0xda, core::slice::from_mut(id1)).await;
+        dcs_read(dsi, 0, 0xdb, core::slice::from_mut(id2)).await;
+        dcs_read(dsi, 0, 0xdc, core::slice::from_mut(id3)).await;
+        assert_eq!(id, [0x40, 0x00, 0x00]);
 
-        dsi::generic_read(dsihost, 0, &[0x04], &mut id).await;
+        // let mut id_two = [0; 3];
+        // dsi::generic_read(dsihost, 0, &[0x04], &mut id_two).await;
+        // assert_eq!(id_two, [0x40, 0x00, 0x00]);
 
-        dsi::dcs_write(dsihost, 0, 0xff, [0x80, 0x09, 0x01]).await;
+        // button.wait_for_rising_edge().await;
 
         // enable command 2 (Manufacturer Command Set); enable param shift
         // address: 0xFF
@@ -646,64 +674,65 @@ mod otm8009a {
         //          0x01:       EXTC (enable param shift)
         // enable MCS access
         // enable orise command 2 access
-        write_reg!(dsihost[0xff80] = [0x80, 0x09]).await;
+        write_reg(dsi, 0xff00, &[0x80, 0x09, 0x01]).await;
+        write_reg(dsi, 0xff80, &[0x80, 0x09]).await;
 
         // set source output levels during porch and non-display area to GND
-        write_reg!(dsihost[0xc480] = 0b11 << 4).await;
+        write_reg(dsi, 0xc480, &[0b11 << 4]).await;
         Timer::after_millis(10).await;
 
         // register not documented
-        write_reg!(dsihost[0xc48a] = 0b100 << 4).await;
+        write_reg(dsi, 0xc48a, &[0b100 << 4]).await;
         Timer::after_millis(10).await;
 
         // enable VCOM test mode (gvdd_en_test)
         // default: 0xa8
-        write_reg!(dsihost[0xc5b1] = [0xa9]).await;
+        write_reg(dsi, 0xc5b1, &[0xa9]).await;
 
         // set pump 4 and 5 VGH to 13V and -9V, respectively
-        write_reg!(dsihost[0xc591] = 0x34).await;
+        write_reg(dsi, 0xc591, &[0x34]).await;
 
         // enable column inversion
-        write_reg!(dsihost[0xc0b4] = 0x50).await;
+        write_reg(dsi, 0xc0b4, &[0x50]).await;
 
         // set VCOM to -1.2625 V
-        write_reg!(dsihost[0x9000] = 0x4e).await;
+        write_reg(dsi, 0xd900, &[0x4e]).await;
 
         // set idle and normal framerate
         let framerate = config.framerate as u8;
-        write_reg!(dsihost[0xc181] = framerate | framerate << 4).await;
+        write_reg(dsi, 0xc181, &[framerate | framerate << 4]).await;
 
         // set RGB video mode VSync source to external;
         // HSync, Data Enable and clock to internal
-        write_reg!(dsihost[0xc1a1] = 0x08).await;
+        write_reg(dsi, 0xc1a1, &[0x08]).await;
 
         // set pump 4 and 5 to x6 => VGH = 6 * VDD and VGL = -6 * VDD
-        write_reg!(dsihost[0xc592] = 0x01).await;
+        write_reg(dsi, 0xc592, &[0x01]).await;
 
         // set pump 4 (VGH/VGL) clock freq to from line to 1/2 line
-        write_reg!(dsihost[0xc595] = 0x34).await;
+        write_reg(dsi, 0xc595, &[0x34]).await;
 
         // set GVDD/NGVDD from +- 5V to +- 4.625V
-        write_reg!(dsihost[0xd800] = [0x79, 0x79]).await;
+        write_reg(dsi, 0xd800, &[0x79, 0x79]).await;
 
         // set pump 1 clock freq to line (default)
-        write_reg!(dsihost[0xc594] = 0x33).await;
+        write_reg(dsi, 0xc594, &[0x33]).await;
 
         // set Source Driver Pull Low phase to 0x1b + 1 MCLK cycles
-        write_reg!(dsihost[0xc0a3] = 0x1b).await;
+        write_reg(dsi, 0xc0a3, &[0x1b]).await;
 
         // enable flying Cap23, Cap24 and Cap32
-        write_reg!(dsihost[0xc082] = 0x83).await;
+        write_reg(dsi, 0xc582, &[0x83]).await;
 
         // set bias current of source OP to 1.2µA
-        write_reg!(dsihost[0xc481] = 0x83).await;
+        write_reg(dsi, 0xc481, &[0x83]).await;
 
         // set RGB video mode VSync, HSync and Data Enable sources to external;
         // clock to internal
-        write_reg!(dsihost[0xc1a1] = 0x0e).await;
+        write_reg(dsi, 0xc1a1, &[0x0e]).await;
 
         // set panel type to normal
-        write_reg!(dsihost[0xb3a6] = [0x00, 0x01]).await;
+        write_reg(dsi, 0xb3a6, &[0x00, 0x01]).await;
 
         // GOA VST:     (reference point is end of back porch; unit = lines)
         // - tcon_goa_vst 1 shift: rising edge 5 cycles before reference point
@@ -712,7 +741,7 @@ mod otm8009a {
         // - tcon_goa_vst 2 shift: rising edge 4 cycles before reference point
         // - tcon_goa_vst 2 pulse width: 1 + 1 cyles
         // - tcon_goa_vst 2 tchop: delay rising edge by 0 cycles
-        write_reg!(dsihost[0xce80] = [0x85, 0x01, 0x00, 0x84, 0x01, 0x00]).await;
+        write_reg(dsi, 0xce80, &[0x85, 0x01, 0x00, 0x84, 0x01, 0x00]).await;
 
         // GOA CLK A1:  (reference point is end of back porch)
         // - width: period = 2 * (1 + 1) units
@@ -728,11 +757,13 @@ mod otm8009a {
         // - extend: don't extend pulse
         // - tchop: delay rising edge by 0 units
         // - tglue: delay falling edge by 0 units
-        write_reg!(
-            dsihost[0xcea0] = [
+        write_reg(
+            dsi,
+            0xcea0,
+            &[
                 0x18, 0x04, 0x03, 0x39, 0x00, 0x00, 0x00, //
                 0x18, 0x03, 0x03, 0x3A, 0x00, 0x00, 0x00,
-            ]
+            ],
         )
         .await;
 
@@ -750,11 +781,13 @@ mod otm8009a {
         // - extend: don't extend pulse
         // - tchop: delay rising edge by 0 units
         // - tglue: delay falling edge by 0 units
-        write_reg!(
-            dsihost[0xceb0] = [
+        write_reg(
+            dsi,
+            0xceb0,
+            &[
                 0x18, 0x02, 0x03, 0x3B, 0x00, 0x00, 0x00, //
                 0x18, 0x01, 0x03, 0x3C, 0x00, 0x00, 0x00,
-            ]
+            ],
         )
         .await;
 
@@ -769,41 +802,50 @@ mod otm8009a {
         // - duty cycle = 50%
         // - 0 VSS lines before VGH
         // - pre-charge to GND period = 0
-        write_reg!(
-            dsihost[0xcfc0] =
-                [0x01, 0x01, 0x20, 0x20, 0x00, 0x00, 0x01, 0x02, 0x00, 0x00]
+        write_reg(
+            dsi,
+            0xcfc0,
+            &[0x01, 0x01, 0x20, 0x20, 0x00, 0x00, 0x01, 0x02, 0x00, 0x00],
         )
         .await;
 
         // register not documented
-        write_reg!(dsihost[0xcfd0] = 0x00).await;
+        write_reg(dsi, 0xcfd0, &[0x00]).await;
 
         // GOA PAD output level during sleep = VGL
-        write_reg!(dsihost[0xcb80] = [0x00; 10]).await;
+        write_reg(dsi, 0xcb80, &[0x00; 10]).await;
         // GOA PAD L output level = VGL
-        write_reg!(dsihost[0xcb90] = [0x00; 15]).await;
-        write_reg!(dsihost[0xcba0] = [0x00; 15]).await;
-        write_reg!(dsihost[0xcbb0] = [0x00; 10]).await;
+        write_reg(dsi, 0xcb90, &[0x00; 15]).await;
+        // write_reg(dsihost, 0xcba0, &[0x00; 15]).await;
+        write_reg(dsi, 0xcba0, &[0x00; 15]).await;
+        write_reg(dsi, 0xcbb0, &[0x00; 10]).await;
+        // write_reg(dsihost, 0xcbb0, &[0x00; 10]).await;
         // GOA PAD H 2..=6 to internal tcon_goa in normal mode
-        write_reg!(
-            dsihost[0xcbc0] = [
-                0x00, 0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x00, //
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ]
+        write_reg(
+            dsi,
+            0xcbc0,
+            &[
+                0x00, 0x04, 0x04, 0x04, 0x04, //
+                0x04, 0x00, 0x00, 0x00, 0x00, //
+                0x00, 0x00, 0x00, 0x00, 0x00,
+            ],
         )
         .await;
         // GOA PAD H 22..=26 to internal tcon_goa in normal mode
-        write_reg!(
-            dsihost[0xcbd0] = [
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x04, //
-                0x04, 0x04, 0x04, 0x00, 0x00, 0x00, 0x00,
-            ]
+        write_reg(
+            dsi,
+            0xcbd0,
+            &[
+                0x00, 0x00, 0x00, 0x00, 0x00, //
+                0x00, 0x04, 0x04, 0x04, 0x04, //
+                0x04, 0x00, 0x00, 0x00, 0x00,
+            ],
         )
         .await;
         // GOA PAD H ..=40 output level = VGL
-        write_reg!(dsihost[0xcbe0] = [0x00; 10]).await;
-        // GOA PAD LVD outpu level = VGH
-        write_reg!(dsihost[0xcbf0] = [0xFF; 10]).await;
+        write_reg(dsi, 0xcbe0, &[0x00; 10]).await;
+        // GOA PAD LVD output level = VGH
+        write_reg(dsi, 0xcbf0, &[0xFF; 10]).await;
 
         // map GOA output pads to internal signals:
         // normal scan:
@@ -820,27 +862,33 @@ mod otm8009a {
         // GOUT25:      vst2
         // GOUT26:      dir1
         // GOUT27..=40: none
-        write_reg!(
-            dsihost[0xcc80] = [
+        write_reg(
+            dsi,
+            0xcc80,
+            &[
                 0x00, 0x26, 0x09, 0x0B, 0x01, //
-                0x25, 0x00, 0x00, 0x00, 0x00
-            ]
+                0x25, 0x00, 0x00, 0x00, 0x00,
+            ],
         )
         .await;
-        write_reg!(
-            dsihost[0xcc90] = [
+        write_reg(
+            dsi,
+            0xcc90,
+            &[
                 0x00, 0x00, 0x00, 0x00, 0x00, //
                 0x00, 0x00, 0x00, 0x00, 0x00, //
                 0x00, 0x26, 0x0A, 0x0C, 0x02,
-            ]
+            ],
         )
         .await;
-        write_reg!(
-            dsihost[0xcca0] = [
+        write_reg(
+            dsi,
+            0xcca0,
+            &[
                 0x25, 0x00, 0x00, 0x00, 0x00, //
                 0x00, 0x00, 0x00, 0x00, 0x00, //
                 0x00, 0x00, 0x00, 0x00, 0x00,
-            ]
+            ],
         )
         .await;
         // reverse scan:
@@ -857,105 +905,113 @@ mod otm8009a {
         // GOUT25:      vst1
         // GOUT26:      dir2
         // GOUT27..=40: none
-        write_reg!(
-            dsihost[0xccb0] = [
+        write_reg(
+            dsi,
+            0xccb0,
+            &[
                 0x00, 0x25, 0x0C, 0x0A, 0x02, //
-                0x26, 0x00, 0x00, 0x00, 0x00
-            ]
+                0x26, 0x00, 0x00, 0x00, 0x00,
+            ],
         )
         .await;
-        write_reg!(
-            dsihost[0xccc0] = [
+        write_reg(
+            dsi,
+            0xccc0,
+            &[
                 0x00, 0x00, 0x00, 0x00, 0x00, //
                 0x00, 0x00, 0x00, 0x00, 0x00, //
                 0x00, 0x25, 0x0B, 0x09, 0x01,
-            ]
+            ],
         )
         .await;
-        write_reg!(
-            dsihost[0xccd0] = [
+        write_reg(
+            dsi,
+            0xccd0,
+            &[
                 0x26, 0x00, 0x00, 0x00, 0x00, //
                 0x00, 0x00, 0x00, 0x00, 0x00, //
                 0x00, 0x00, 0x00, 0x00, 0x00,
-            ]
+            ],
         )
         .await;
 
         // set pump 1 min/max DM
-        write_reg!(dsihost[0xc581] = 0x66).await;
+        write_reg(dsi, 0xc581, &[0x66]).await;
 
         // register not documented
-        write_reg!(dsihost[0xf5b6] = 0x06).await;
+        write_reg(dsi, 0xf5b6, &[0x06]).await;
 
         // set PWM freq to 19.531kHz
-        write_reg!(dsihost[0xc6b1] = 0x06).await;
+        write_reg(dsi, 0xc6b1, &[0x06]).await;
 
         // Gamma correction 2.2+ table
-        write_reg!(
-            dsihost[0xe100] = [
+        write_reg(
+            dsi,
+            0xe100,
+            &[
                 0x00, 0x09, 0x0F, 0x0E, 0x07, 0x10, 0x0B, 0x0A, //
                 0x04, 0x07, 0x0B, 0x08, 0x0F, 0x10, 0x0A, 0x01,
-            ]
+            ],
         )
         .await;
         // Gamma correction 2.2- table
-        write_reg!(
-            dsihost[0xe200] = [
+        write_reg(
+            dsi,
+            0xe200,
+            &[
                 0x00, 0x09, 0x0F, 0x0E, 0x07, 0x10, 0x0B, 0x0A, //
                 0x04, 0x07, 0x0B, 0x08, 0x0F, 0x10, 0x0A, 0x01,
-            ]
+            ],
         )
         .await;
+
         let mut gamma = [0x00; 16];
-        dsi::dcs_write(dsihost, 0, 0x00, [0x00]).await;
-        dsi::dcs_read(dsihost, 0, 0xe1, &mut gamma).await;
+        read_reg(dsi, 0xe100, &mut gamma).await;
         gamma.fill(0);
-        dsi::dcs_write(dsihost, 0, 0x00, [0x00]).await;
-        dsi::dcs_read(dsihost, 0, 0xe2, &mut gamma).await;
+        read_reg(dsi, 0xe200, &mut gamma).await;
 
         // exit CMD2 mode
-        write_reg!(dsihost[0xff00] = [0xff, 0xff, 0xff]).await;
+        write_reg(dsi, 0xff00, &[0xff, 0xff, 0xff]).await;
 
         // standard DCS initialisation
-        dsi::dcs_write(dsihost, 0, cmd::Dcs::SLPOUT, None).await;
+        dcs_write(dsi, 0, cmd::Dcs::SLPOUT, None).await;
         Timer::after_millis(5).await;
-        dsi::dcs_write(dsihost, 0, cmd::Dcs::COLMOD, [cmd::Colmod::Rgb888 as u8]).await;
-        dsi::dcs_write(dsihost, 0, cmd::Dcs::RDDMADCTR, [cmd::Colmod::Rgb888 as u8])
-            .await;
+        dcs_write(dsi, 0, cmd::Dcs::COLMOD, [cmd::Colmod::Rgb888 as u8]).await;
+        dcs_write(dsi, 0, cmd::Dcs::RDDMADCTR, [cmd::Colmod::Rgb888 as u8]).await;
 
         // configure orientation and screen area
         let madctr =
             cmd::Madctr::from(config.orientation) | cmd::Madctr::from(config.color_map);
-        dsi::dcs_write(dsihost, 0, cmd::Dcs::MADCTR, [madctr.bits()]).await;
+        dcs_write(dsi, 0, cmd::Dcs::MADCTR, [madctr.bits()]).await;
         let [col_hi, col_lo] = (config.cols.get() - 1).to_be_bytes();
         let [row_hi, row_lo] = (config.rows.get() - 1).to_be_bytes();
-        dsi::dcs_write(dsihost, 0, cmd::Dcs::CASET, [0, 0, col_hi, col_lo]).await;
-        dsi::dcs_write(dsihost, 0, cmd::Dcs::PASET, [0, 0, row_hi, row_lo]).await;
+        dcs_write(dsi, 0, cmd::Dcs::CASET, [0, 0, col_hi, col_lo]).await;
+        dcs_write(dsi, 0, cmd::Dcs::PASET, [0, 0, row_hi, row_lo]).await;
 
         // set display brightness
-        dsi::dcs_write(dsihost, 0, cmd::Dcs::WRDISBV, [0xFF]).await;
+        dsi::dcs_write(dsi, 0, cmd::Dcs::WRDISBV, [0xFF]).await;
 
         // display backlight control config
         let wctrld = cmd::Ctrld::BRIGHTNESS_CONTROL_ON
             | cmd::Ctrld::DIMMING_ON
             | cmd::Ctrld::BACKLIGHT_ON;
-        dsi::dcs_write(dsihost, 0, cmd::Dcs::WRCTRLD, [wctrld.bits()]).await;
+        dcs_write(dsi, 0, cmd::Dcs::WRCTRLD, [wctrld.bits()]).await;
 
         // content adaptive brightness control config
-        dsi::dcs_write(dsihost, 0, cmd::Dcs::WRCABC, [Cabc::StillPicture as u8]).await;
+        dcs_write(dsi, 0, cmd::Dcs::WRCABC, [Cabc::StillPicture as u8]).await;
 
         // set CABC minimum brightness
-        dsi::dcs_write(dsihost, 0, cmd::Dcs::WRCABCMB, [0xFF]).await;
+        dcs_write(dsi, 0, cmd::Dcs::WRCABCMB, [0xFF]).await;
 
         // turn display on
-        dsi::dcs_write(dsihost, 0, cmd::Dcs::DISPON, None).await;
+        dcs_write(dsi, 0, cmd::Dcs::DISPON, None).await;
 
-        dsi::dcs_write(dsihost, 0, cmd::Dcs::NOP, None).await;
+        dcs_write(dsi, 0, cmd::Dcs::NOP, None).await;
 
         // send GRAM memory write to initiate frame write
         // via other DSI commands sent by LTDC
 
-        dsi::dcs_write(dsihost, 0, cmd::Dcs::RAMWR, None).await;
+        dcs_write(dsi, 0, cmd::Dcs::RAMWR, None).await;
     }
 
     mod cmd {
@@ -1274,17 +1330,86 @@ mod otm8009a {
 
 #[allow(unused)]
 mod dsi {
+    use core::array;
+    use core::array::from_fn;
+    use core::future;
     use core::iter;
+    use core::sync::atomic;
+    use core::sync::atomic::AtomicUsize;
 
     use embassy_futures::yield_now;
     use embassy_stm32::pac::dsihost::Dsihost;
+    use embassy_stm32::pac::dsihost::regs::Ghcr;
+    use embassy_stm32::pac::rtc::regs::Tr;
+    use embassy_sync::blocking_mutex;
+    use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+    use embassy_sync::mutex::Mutex;
+    use embassy_time::Duration;
+    use scuffed_write::async_writeln;
 
-    mod packet {
+    #[used]
+    pub static GPDR_WORDS_WRITTEN: AtomicUsize = AtomicUsize::new(0);
+
+    /// MUST NOT BE HELD ACROSS AWAIT POINTS
+    #[used]
+    pub static TRANSACTIONS: Mutex<
+        ThreadModeRawMutex,
+        heapless::Deque<Transaction, 1024>,
+    > = Mutex::new(heapless::Deque::new());
+
+    #[derive(Debug)]
+    #[derive(Clone, Copy)]
+    #[derive(PartialEq, Eq)]
+    #[derive(Hash)]
+    #[repr(C)]
+    pub struct Transaction {
+        pub ty: TransactionType,
+        pub data: u32,
+    }
+
+    impl Transaction {
+        pub const fn new(ty: TransactionType, data: u32) -> Self {
+            Self { ty, data }
+        }
+
+        pub const fn header(data: u32) -> Self {
+            Self::new(TransactionType::HeaderWrite, data)
+        }
+
+        pub const fn write(data: u32) -> Self {
+            Self::new(TransactionType::DataWrite, data)
+        }
+
+        pub const fn read(data: u32) -> Self {
+            Self::new(TransactionType::DataRead, data)
+        }
+    }
+
+    #[derive(Debug)]
+    #[derive(Clone, Copy)]
+    #[derive(PartialEq, Eq)]
+    #[derive(Hash)]
+    #[repr(u32)]
+    pub enum TransactionType {
+        HeaderWrite = 0x11111111,
+        DataWrite = 0x22222222,
+        DataRead = 0x33333333,
+    }
+
+    pub mod packet {
+        #[derive(Debug)]
+        #[derive(Clone, Copy)]
+        #[derive(PartialEq, Eq)]
+        #[derive(Hash)]
         pub enum Type {
             Short(Short),
             Long(Long),
         }
 
+        #[derive(Debug)]
+        #[derive(Clone, Copy)]
+        #[derive(PartialEq, Eq)]
+        #[derive(Hash)]
         #[repr(u8)]
         pub enum Short {
             GenericWrite0P = 0x03,
@@ -1299,6 +1424,10 @@ mod dsi {
             SetMaxReturnPacketSize = 0x37,
         }
 
+        #[derive(Debug)]
+        #[derive(Clone, Copy)]
+        #[derive(PartialEq, Eq)]
+        #[derive(Hash)]
         #[repr(u8)]
         pub enum Long {
             Null = 0x09,
@@ -1417,7 +1546,7 @@ mod dsi {
             | 2 => packet::Type::Short(packet::Short::GenericWrite2P),
             | 3.. => packet::Type::Long(packet::Long::GenericWrite),
         };
-        transfer(dsi, channel, ty, tx).await
+        write(dsi, channel, ty, tx).await
     }
 
     pub async fn dcs_write<I>(dsi: Dsihost, channel: u8, cmd: impl Into<u8>, tx: I)
@@ -1431,15 +1560,15 @@ mod dsi {
             | 1 => packet::Type::Short(packet::Short::DCSWrite1P),
             | 2.. => packet::Type::Long(packet::Long::DCSWrite),
         };
-        transfer(dsi, channel, ty, iter::once(cmd.into()).chain(tx)).await
+        write(dsi, channel, ty, iter::once(cmd.into()).chain(tx)).await
     }
 
-    async fn transfer<I>(dsi: Dsihost, channel: u8, ty: packet::Type, tx: I)
+    async fn write<I>(dsi: Dsihost, channel: u8, ty: packet::Type, tx: I)
     where
         I: IntoIterator<Item = u8>,
     {
         match ty {
-            | packet::Type::Long(ty) => long_transfer(dsi, channel, ty, tx).await,
+            | packet::Type::Long(ty) => long_write(dsi, channel, ty, tx).await,
             | packet::Type::Short(ty) => {
                 let mut tx = tx.into_iter();
                 short_transfer(dsi, channel, ty, tx.next(), tx.next()).await
@@ -1447,7 +1576,7 @@ mod dsi {
         }
     }
 
-    async fn long_transfer(
+    async fn long_write(
         dsi: Dsihost,
         channel: u8,
         ty: packet::Long,
@@ -1460,28 +1589,26 @@ mod dsi {
         wait_command_fifo_empty(dsi).await;
 
         for chunk in &mut bytes {
-            dsi.gpdr().write_value(embassy_stm32::pac::dsihost::regs::Gpdr(
-                u32::from_le_bytes(chunk),
-            ));
+            wait_command_fifo_not_full(dsi).await;
+            write_word(dsi, u32::from_le_bytes(chunk));
             wait_command_fifo_empty(dsi).await;
         }
 
-        if let Some(remainder) = bytes.into_remainder() {
-            dsi.gpdr().write_value(embassy_stm32::pac::dsihost::regs::Gpdr(
-                remainder.fold(0, |acc, byte| (acc << 8) | byte as u32),
-            ));
+        if let Some(mut remainder) = bytes.into_remainder() {
+            wait_command_fifo_not_full(dsi).await;
+            write_word(
+                dsi,
+                u32::from_le_bytes(array::from_fn(|_| remainder.next().unwrap_or(0))),
+            );
+
             wait_command_fifo_empty(dsi).await;
         }
 
-        dsi.ghcr().write(|w| {
-            w.set_vcid(channel);
-            w.set_dt(ty.into());
-            let [lsb, msb] = len.to_le_bytes();
-            w.set_wclsb(lsb);
-            w.set_wcmsb(msb);
-        });
+        let [lsb, msb] = len.to_le_bytes();
+        config_header(dsi, ty, channel, lsb, msb);
 
         wait_command_fifo_empty(dsi).await;
+        wait_payload_write_fifo_empty(dsi).await;
     }
 
     async fn short_transfer(
@@ -1493,14 +1620,10 @@ mod dsi {
     ) {
         wait_command_fifo_empty(dsi).await;
 
-        dsi.ghcr().write(|w| {
-            w.set_vcid(channel);
-            w.set_dt(ty.into());
-            w.set_wclsb(p0.unwrap_or(0));
-            w.set_wcmsb(p1.unwrap_or(0));
-        });
+        config_header(dsi, ty, channel, p0.unwrap_or(0), p1.unwrap_or(0));
 
         wait_command_fifo_empty(dsi).await;
+        wait_payload_write_fifo_empty(dsi).await;
     }
 
     pub async fn generic_read(dsi: Dsihost, channel: u8, args: &[u8], dst: &mut [u8]) {
@@ -1537,38 +1660,87 @@ mod dsi {
         dst: &mut [u8],
     ) {
         let len = u16::try_from(dst.len()).expect("read len out of bounds for u16");
-        let [lsb, msb] = len.to_le_bytes();
 
-        short_transfer(
-            dsi,
-            channel,
-            packet::Short::SetMaxReturnPacketSize,
-            Some(lsb),
-            Some(msb),
-        )
-        .await;
+        wait_command_fifo_empty(dsi).await;
 
-        dsi.ghcr().write(|w| {
-            w.set_vcid(channel);
-            w.set_dt(ty.into());
-            w.set_wclsb(p0.unwrap_or(0));
-            w.set_wcmsb(p1.unwrap_or(0));
-        });
+        if len > 2 {
+            set_max_return(dsi, channel, len);
+        }
+
+        config_header(dsi, ty, channel, p0.unwrap_or(0), p1.unwrap_or(0));
 
         wait_read_not_busy(dsi).await;
 
         let mut bytes = dst.array_chunks_mut::<4>();
         for chunk in &mut bytes {
             wait_payload_read_fifo_not_empty(dsi).await;
-            *chunk = dsi.gpdr().read().0.to_le_bytes();
+            *chunk = read_word(dsi).to_le_bytes();
         }
 
         let remainder = bytes.into_remainder();
         if !remainder.is_empty() {
             wait_payload_read_fifo_not_empty(dsi).await;
-            let gdpr = dsi.gpdr().read().0.to_le_bytes();
-            remainder.copy_from_slice(&gdpr[..remainder.len()]);
+            let word = read_word(dsi).to_le_bytes();
+            remainder.copy_from_slice(&word[..remainder.len()]);
         }
+    }
+
+    #[inline]
+    fn set_max_return(dsi: Dsihost, channel: u8, size: u16) {
+        let [lsb, msb] = size.to_le_bytes();
+        config_header(
+            dsi,
+            packet::Short::SetMaxReturnPacketSize,
+            channel,
+            lsb,
+            msb,
+        )
+    }
+
+    fn config_header(
+        dsi: Dsihost,
+        dt: impl Into<packet::Type>,
+        channel: u8,
+        wclsb: u8,
+        wcmsb: u8,
+    ) {
+        let mut ghcr = Ghcr::default();
+        ghcr.set_dt(dt.into().into());
+        ghcr.set_vcid(channel);
+        ghcr.set_wclsb(wclsb);
+        ghcr.set_wcmsb(wcmsb);
+
+        dsi.ghcr().write_value(ghcr);
+
+        #[cfg(debug_assertions)]
+        report_transaction(Transaction::header(ghcr.0));
+    }
+
+    fn write_word(dsi: Dsihost, word: u32) {
+        dsi.gpdr().write_value(embassy_stm32::pac::dsihost::regs::Gpdr(word));
+
+        #[cfg(debug_assertions)]
+        {
+            GPDR_WORDS_WRITTEN.fetch_add(1, atomic::Ordering::Relaxed);
+            report_transaction(Transaction::write(word));
+        }
+    }
+
+    fn read_word(dsi: Dsihost) -> u32 {
+        let word = dsi.gpdr().read().0;
+
+        #[cfg(debug_assertions)]
+        report_transaction(Transaction::read(word));
+
+        word
+    }
+
+    fn report_transaction(transaction: Transaction) {
+        let mut t = TRANSACTIONS.try_lock().expect("deadlock");
+        if t.is_full() {
+            t.pop_front();
+        }
+        t.push_back(transaction).expect("transaction fifo has 0 capacity");
     }
 
     async fn wait_command_fifo_empty(dsi: Dsihost) {
@@ -1591,6 +1763,12 @@ mod dsi {
 
     async fn wait_payload_read_fifo_not_empty(dsi: Dsihost) {
         while dsi.gpsr().read().prdfe() {
+            yield_now().await
+        }
+    }
+
+    async fn wait_payload_write_fifo_empty(dsi: Dsihost) {
+        while !dsi.gpsr().read().pwrfe() {
             yield_now().await
         }
     }
