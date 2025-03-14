@@ -162,9 +162,9 @@ impl<'buf, P> Framebuffer<'buf, P> {
     /// Panics if `mid > nrows`.
     pub fn split_at(self, mid: usize) -> (Self, Self) {
         assert!(mid <= self.nrows());
-        let mid_byte = mid * self.cols;
+        let mid_px = mid * self.cols;
 
-        let (left, right): (Row<'buf, P>, Row<'buf, P>) = self.buf.split_at(mid_byte);
+        let (left, right): (Row<'buf, P>, Row<'buf, P>) = self.buf.split_at(mid_px);
         // # Safety:
         //
         // left.len()   == mid_byte
@@ -416,7 +416,7 @@ impl<'buf, P> Row<'buf, P> {
     }
 
     /// Returns the length of the [`Framebuffer`] [`Row`].
-    pub const fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.buf.len() / size_of::<P>()
     }
 
@@ -450,11 +450,13 @@ impl<'buf, P> Row<'buf, P> {
     pub fn try_slice(self, range: impl RangeBounds<usize>) -> Option<Self> {
         let Range { start, end } = slice::try_range(range, ..self.len())?;
         let len = end - start;
+        let start_byte = start * size_of::<P>();
+        let byte_len = len * size_of::<P>();
         // # Safety:
         // We checked that `range` is in-bounds of `self.buf`.
         unsafe {
-            let start = self.buf.as_non_null_ptr().add(start * size_of::<P>());
-            Some(Self::new(NonNull::slice_from_raw_parts(start, len)))
+            let start = self.buf.as_non_null_ptr().add(start_byte);
+            Some(Self::new(NonNull::slice_from_raw_parts(start, byte_len)))
         }
     }
 
@@ -469,10 +471,11 @@ impl<'buf, P> Row<'buf, P> {
     /// Panics if `mid > len`.
     pub fn split_at(self, mid: usize) -> (Self, Self) {
         assert!(mid <= self.len());
+        let mid_byte = mid * size_of::<P>();
         // # Safety:
         //
         // `self.buf.len()` is in-bounds.
-        let (left, right) = unsafe { self.buf.as_ptr().split_at_mut(mid) };
+        let (left, right) = unsafe { self.buf.as_ptr().split_at_mut(mid_byte) };
         // # Safety:
         //
         // `left` and `right` are both derived from and in-bounds of a valid `NonNull`.
@@ -1019,7 +1022,7 @@ unsafe fn aligned_volatile_copy_from_iter(
 
     debug_assert_eq!(dst.align_offset(align_of::<u32>()), 0);
     let mut dst = dst.cast::<u32>();
-    let mut src_words = src.by_ref().take(body_len).array_chunks();
+    let mut src_words = src.by_ref().take(body_len * size_of::<u32>()).array_chunks();
     for word in src_words.by_ref() {
         // Safety: trust me bro
         unsafe {
