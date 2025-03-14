@@ -10,7 +10,9 @@
 use core::arch::breakpoint;
 use core::mem::MaybeUninit;
 use core::num::NonZeroU16;
-use core::sync::atomic::AtomicUsize;
+use core::panic::PanicInfo;
+use core::sync::atomic::Ordering;
+use core::sync::atomic::{self};
 
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
@@ -28,15 +30,21 @@ use embassy_stm32::rcc;
 use embassy_stm32::time::Hertz;
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
-use embassy_sync::once_lock::OnceLock;
 use embassy_sync::watch;
 use embassy_sync::watch::Watch;
 use embassy_time::Duration;
 use embassy_time::Timer;
 use embedded_graphics::pixelcolor::Rgb888;
-#[allow(unused_imports)]
-use panic_halt as _;
 use rand_core::RngCore;
+
+#[inline(never)]
+#[panic_handler]
+fn panic(_info: &PanicInfo) -> ! {
+    loop {
+        breakpoint();
+        atomic::compiler_fence(Ordering::SeqCst);
+    }
+}
 
 const HOSTNAME: &str = "STM32F7-DISCO";
 // first octet: locally administered (administratively assigned) unicast address;
@@ -57,9 +65,18 @@ impl
 {
     unsafe fn on_interrupt() {
         let dsihost = embassy_stm32::pac::DSIHOST;
-        let flags = dsihost.wisr().read();
-        let tearing_effect = flags.teif();
-        let end_of_refresh = flags.erif();
+        let wrapper_flags = dsihost.wisr().read();
+        let tearing_effect = wrapper_flags.teif();
+        let end_of_refresh = wrapper_flags.erif();
+        let isr1 = dsihost.isr1().read();
+        if isr1.lpwre()
+            || isr1.gcwre()
+            || isr1.gpwre()
+            || isr1.gptxe()
+            || isr1.gprde() | isr1.gprxe()
+        {
+            panic!()
+        }
         _ = tearing_effect;
         _ = end_of_refresh;
         dsihost.wifcr().modify(|w| {
@@ -158,15 +175,15 @@ async fn _main(spawner: Spawner) -> ! {
 
     let disp = async {
         rcc::enable_and_reset::<peripherals::DSIHOST>();
-        let dsihost = embassy_stm32::pac::DSIHOST;
+        let dsi = embassy_stm32::pac::DSIHOST;
 
         // === global config ===
 
         // == clock and timing config ==
 
         // enable voltage regulator
-        dsihost.wrpcr().modify(|w| w.set_regen(true));
-        while !dsihost.wisr().read().rrs() {
+        dsi.wrpcr().modify(|w| w.set_regen(true));
+        while !dsi.wisr().read().rrs() {
             yield_now().await;
         }
 
@@ -181,25 +198,25 @@ async fn _main(spawner: Spawner) -> ! {
         debug_assert!((1..=7).contains(&pll_idf));
         debug_assert!([1, 2, 4, 8].contains(&pll_odf));
 
-        dsihost.wrpcr().modify(|w| {
+        dsi.wrpcr().modify(|w| {
             w.set_ndiv(pll_ndiv as u8);
             w.set_idf(pll_idf as u8 - 1);
             w.set_odf(pll_odf.ilog2() as u8);
             w.set_pllen(true);
         });
 
-        while !dsihost.wisr().read().pllls() {
+        while !dsi.wisr().read().pllls() {
             yield_now().await;
         }
 
         // enable D-PHY digital section and clock lane module
-        dsihost.pctlr().modify(|w| {
+        dsi.pctlr().modify(|w| {
             w.set_den(true);
             w.set_cke(true);
         });
 
         // set clock lane control to auto and enable HS clock lane
-        dsihost.clcr().modify(|w| {
+        dsi.clcr().modify(|w| {
             w.set_acr(false);
             w.set_dpcc(true);
         });
@@ -207,7 +224,7 @@ async fn _main(spawner: Spawner) -> ! {
         // configure number of active data lanes
         // 0 = lane 0
         // 1 = lanes 0 and 1 (default)
-        dsihost.pconfr().modify(|w| w.set_nl(1));
+        dsi.pconfr().modify(|w| w.set_nl(1));
 
         // lane_byte_clk
         //  = fvco / (2 * odf * 8)
@@ -220,22 +237,38 @@ async fn _main(spawner: Spawner) -> ! {
         //  <=> TXECKDIV > (62.5 / 20) MHz
         //  <=> TXECKDIV > 3.125
         // Timeout clock div = 1
-        dsihost.ccr().modify(|w| {
+        dsi.ccr().modify(|w| {
             w.set_txeckdiv(4);
         });
 
         // set unit interval in multiples of .25 ns
         let unit_interval = Hertz::mhz(1_000) * 4_u32 / hs_clk;
         debug_assert!(unit_interval <= 0b11_1111);
-        dsihost.wpcr0().modify(|w| w.set_uix4(unit_interval as u8));
+        dsi.wpcr0().modify(|w| w.set_uix4(unit_interval as u8));
 
         // set stop wait time
         // (minimum wait time before requesting a HS transmission after stop state)
         // minimum is 10 (lanebyteclk cycles?)
-        dsihost.pconfr().modify(|w| w.set_sw_time(10));
+        dsi.pconfr().modify(|w| w.set_sw_time(10));
+
+        dsi.cltcr().modify(|w| {
+            // lanebyteclk cycles
+            // copied from https://github.com/STMicroelectronics/STM32CubeF7/blob/18642033f376dead4f28f09f21b5ae75abb4020e/Projects/STM32F769I-Discovery/Examples/LCD_DSI/LCD_DSI_CmdMode_DoubleBuffer/Src/main.c#L299
+            let time = 35;
+            w.set_hs2lp_time(time);
+            w.set_lp2hs_time(time);
+        });
+
+        dsi.dltcr().modify(|w| {
+            // lanebyteclk cycles
+            // copied from https://github.com/STMicroelectronics/STM32CubeF7/blob/18642033f376dead4f28f09f21b5ae75abb4020e/Projects/STM32F769I-Discovery/Examples/LCD_DSI/LCD_DSI_CmdMode_DoubleBuffer/Src/main.c#L301
+            let time = 35;
+            w.set_hs2lp_time(time);
+            w.set_lp2hs_time(time);
+        });
 
         // flow control config ==
-        dsihost.pcr().modify(|w| {
+        dsi.pcr().modify(|w| {
             // enable EoT packet transmission
             // w.set_ettxe(true);
             // enable EoT packet reception
@@ -251,31 +284,32 @@ async fn _main(spawner: Spawner) -> ! {
         // === adapted command mode config ===
 
         // set DSI host to adapted command mode
-        dsihost.mcr().modify(|w| w.set_cmdm(true));
+        dsi.mcr().modify(|w| w.set_cmdm(true));
         // set DSI wrapper to adapted command mode
-        dsihost.wcfgr().modify(|w| w.set_dsim(true));
+        dsi.wcfgr().modify(|w| w.set_dsim(true));
 
         // set DSI wrapper to 24 bit color
-        dsihost.wcfgr().modify(|w| w.set_colmux(0b101));
+        dsi.wcfgr().modify(|w| w.set_colmux(0b101));
         // set DSI host to use 24 bit color
-        dsihost.lcolcr().modify(|w| w.set_colc(0b101));
+        dsi.lcolcr().modify(|w| w.set_colc(0b101));
 
         // set size in pixels of long write commands
         // DSI host pixel FIFO is 960 * 32-bit words
         // 24-bit color depth
         //  => max command size = 960 * 32/24 = 1280 px
-        dsihost.lccr().modify(|w| w.set_cmdsize(960 * 32 / 24));
+        let pixel_fifo_size = 960 * 32 / 24;
+        dsi.lccr().modify(|w| w.set_cmdsize(pixel_fifo_size));
 
         // configure HSYNC, VSYNC and DATA ENABLE polarity
         // to match LTDC polarity config
         // default: all active high (0)
-        dsihost.lpcr().modify(|w| {
+        dsi.lpcr().modify(|w| {
             w.set_dep(false);
             w.set_vsp(false);
             w.set_hsp(false);
         });
 
-        dsihost.wcfgr().modify(|w| {
+        dsi.wcfgr().modify(|w| {
             // configure tearing effect
             // TE effect over link
             //  => acknowledge request must be enabled
@@ -303,13 +337,13 @@ async fn _main(spawner: Spawner) -> ! {
             w.set_vspol(false);
         });
 
-        dsihost.cmcr().modify(|w| {
+        dsi.cmcr().modify(|w| {
             // enable TE ack request
             // default: false
             w.set_teare(true);
         });
 
-        dsihost.wier().write(|w| {
+        dsi.wier().write(|w| {
             // enable tearing effect interrupt
             w.set_teie(true);
             // enable end of refresh interrupt
@@ -321,7 +355,7 @@ async fn _main(spawner: Spawner) -> ! {
         // default: high-speed (0)
         //
         // some displays require init commands to be sent in LP mode
-        dsihost.cmcr().modify(|w| {
+        dsi.cmcr().modify(|w| {
             // generic short write zero params
             w.set_gsw0tx(false);
             // generic short write one param
@@ -350,36 +384,25 @@ async fn _main(spawner: Spawner) -> ! {
 
         // request an acknowledge after every sent command
         // default: false
-        dsihost.cmcr().modify(|w| w.set_are(false));
+        dsi.cmcr().modify(|w| w.set_are(false));
 
-        // dsihost.cr().modify(|w| w.set_en(true));
-        otm8009a::init(
-            dsihost,
-            otm8009a::Config {
-                framerate: otm8009a::FrameRateHz::_60,
-                orientation: otm8009a::Orientation::Landscape,
-                color_map: otm8009a::ColorMap::Rgb,
-                rows: NonZeroU16::new(otm8009a::HEIGHT).expect("height must be nonzero"),
-                cols: NonZeroU16::new(otm8009a::WIDTH).expect("width must be nonzero"),
-            },
-            &mut lcd_reset_pin,
-            &mut _button,
-        )
-        .await;
+        dsi.ier1().write(|w| {
+            // LTDC payload write error
+            w.set_lpwreie(true);
+            // generic command write error
+            w.set_gcwreie(true);
+            // generic payload write error
+            w.set_gpwreie(true);
+            // gemeroc payload tx error
+            w.set_gptxeie(true);
+            // generic payload read error
+            w.set_gprdeie(true);
+            // generic payload rx error
+            w.set_gprxeie(true);
+        });
 
-        // LTDC settings
-        // pixel clock:
-        //  - must be fast enough to ensure that GRAM refresh time
-        //    is shorter than display internal refresh rate
-        //  - must be slow enough to avoid LTDC FIFO underrun
-        // video timing:
-        //  - vertical/horizontal blanking periods may be set to minumum (1)
-        //  - HACT and VACT must be set in accordance with line length and count
-        // ...
-
-        loop {
-            yield_now().await
-        }
+        // dsi.cr().write(|w| w.set_en(true));
+        // dsi.wcr().write(|w| w.set_dsien(true));
 
         const ROWS: usize = 480;
         const COLS: usize = 800;
@@ -400,21 +423,36 @@ async fn _main(spawner: Spawner) -> ! {
             pixel_clock_polarity: ltdc::PolarityEdge::RisingEdge,
         });
 
-        dsihost.cltcr().modify(|w| {
-            // lanebyteclk cycles
-            // copied from https://github.com/STMicroelectronics/STM32CubeF7/blob/18642033f376dead4f28f09f21b5ae75abb4020e/Projects/STM32F769I-Discovery/Examples/LCD_DSI/LCD_DSI_CmdMode_DoubleBuffer/Src/main.c#L299
-            let time = 35;
-            w.set_hs2lp_time(time);
-            w.set_lp2hs_time(time);
-        });
+        otm8009a::init(
+            dsi,
+            otm8009a::Config {
+                framerate: otm8009a::FrameRateHz::_65,
+                orientation: otm8009a::Orientation::Landscape,
+                color_map: otm8009a::ColorMap::Rgb,
+                rows: NonZeroU16::new(otm8009a::HEIGHT).expect("height must be nonzero"),
+                cols: NonZeroU16::new(otm8009a::WIDTH).expect("width must be nonzero"),
+            },
+            pixel_fifo_size,
+            &mut lcd_reset_pin,
+            &mut _button,
+        )
+        .await;
 
-        dsihost.dltcr().modify(|w| {
-            // lanebyteclk cycles
-            // copied from https://github.com/STMicroelectronics/STM32CubeF7/blob/18642033f376dead4f28f09f21b5ae75abb4020e/Projects/STM32F769I-Discovery/Examples/LCD_DSI/LCD_DSI_CmdMode_DoubleBuffer/Src/main.c#L301
-            let time = 35;
-            w.set_hs2lp_time(time);
-            w.set_lp2hs_time(time);
-        });
+        let buf: &'static mut [MaybeUninit<u8>] = &mut memory[..PIXELS * 3];
+        let mut framebuf = graphics::Framebuffer::<[u8; 3]>::new(buf, ROWS, COLS);
+        use embedded_graphics::prelude::*;
+        Ok(()) =
+            framebuf.fill_solid(&framebuf.bounding_box(), Rgb888::new(0x57, 0x00, 0x7F));
+
+        // ltdc.set_buffer(ltdc::LtdcLayer::Layer1, framebuf.as_ptr().as_ptr().cast())
+        //     .await
+        //     .unwrap();
+
+        let ltdc_p = embassy_stm32::pac::LTDC;
+        ltdc_p
+            .layer(0)
+            .cfbar()
+            .modify(|w| w.set_cfbadd(framebuf.as_ptr().as_ptr().cast::<()>() as u32));
 
         ltdc.init_layer(
             &ltdc::LtdcLayerConfig {
@@ -428,18 +466,22 @@ async fn _main(spawner: Spawner) -> ! {
             None,
         );
 
-        dsihost.cr().modify(|w| w.set_en(true));
-        dsihost.wcr().modify(|w| w.set_dsien(true));
-        ltdc.enable();
+        // ltdc.enable();
+        dsi.wcr().modify(|w| w.set_ltdcen(true));
 
-        let buf: &'static mut [MaybeUninit<u8>] = &mut memory[..PIXELS * 3];
-        let mut framebuf = graphics::Framebuffer::<[u8; 3]>::new(buf, ROWS, COLS);
-        use embedded_graphics::prelude::*;
-        Ok(()) =
-            framebuf.fill_solid(&framebuf.bounding_box(), Rgb888::new(0x57, 0x00, 0x7F));
-        ltdc.set_buffer(ltdc::LtdcLayer::Layer1, framebuf.as_ptr().as_ptr().cast())
-            .await
-            .unwrap();
+        // LTDC settings
+        // pixel clock:
+        //  - must be fast enough to ensure that GRAM refresh time
+        //    is shorter than display internal refresh rate
+        //  - must be slow enough to avoid LTDC FIFO underrun
+        // video timing:
+        //  - vertical/horizontal blanking periods may be set to minumum (1)
+        //  - HACT and VACT must be set in accordance with line length and count
+        // ...
+
+        loop {
+            yield_now().await
+        }
     };
 
     join3(blink, net, disp).await.0
@@ -550,15 +592,15 @@ fn config() -> (embassy_stm32::Config, Hertz, Hertz) {
         rcc.pllsai = Some(Pll {
             // PLL in == 25 MHz / 25 == 1 MHz
             prediv: PllPreDiv::DIV25,
-            // PLL out == 1 MHz * 192 == 192 MHz
-            mul: PllMul(192),
+            // PLL out == 1 MHz * 384 == 384 MHz
+            mul: PllMul(384),
             divp: None,
             divq: None,
             // LTDC clock == PLLSAIR / 2
             //            == PLL out / divr / 2
-            //            == 192 MHz / 2 / 2
-            //            == 48 MHz
-            divr: Some(PllRDiv::DIV2),
+            //            == 384 MHz / 7 / 2
+            //            == 27 MHz
+            divr: Some(PllRDiv::DIV7),
         });
         rcc.pll_src = PllSource::HSE;
         rcc.sys = Sysclk::PLL1_P;
@@ -627,6 +669,7 @@ mod otm8009a {
     pub async fn init(
         dsi: embassy_stm32::pac::dsihost::Dsihost,
         config: Config,
+        pixel_fifo_size: u16,
         reset_pin: &mut Output<'_>,
         _button: &mut ExtiInput<'_>,
     ) {
@@ -967,17 +1010,17 @@ mod otm8009a {
 
         let mut gamma = [0x00; 16];
         read_reg(dsi, 0xe100, &mut gamma).await;
-        gamma.fill(0);
-        read_reg(dsi, 0xe200, &mut gamma).await;
+        // gamma.fill(0);
+        // read_reg(dsi, 0xe200, &mut gamma).await;
 
         // exit CMD2 mode
         write_reg(dsi, 0xff00, &[0xff, 0xff, 0xff]).await;
+        dcs_write(dsi, 0, 0x00, [0x00]).await;
 
         // standard DCS initialisation
         dcs_write(dsi, 0, cmd::Dcs::SLPOUT, None).await;
-        Timer::after_millis(5).await;
+        Timer::after_millis(120).await;
         dcs_write(dsi, 0, cmd::Dcs::COLMOD, [cmd::Colmod::Rgb888 as u8]).await;
-        dcs_write(dsi, 0, cmd::Dcs::RDDMADCTR, [cmd::Colmod::Rgb888 as u8]).await;
 
         // configure orientation and screen area
         let madctr =
@@ -989,7 +1032,7 @@ mod otm8009a {
         dcs_write(dsi, 0, cmd::Dcs::PASET, [0, 0, row_hi, row_lo]).await;
 
         // set display brightness
-        dsi::dcs_write(dsi, 0, cmd::Dcs::WRDISBV, [0xFF]).await;
+        dsi::dcs_write(dsi, 0, cmd::Dcs::WRDISBV, [0x7F]).await;
 
         // display backlight control config
         let wctrld = cmd::Ctrld::BRIGHTNESS_CONTROL_ON
@@ -1029,6 +1072,9 @@ mod otm8009a {
             SLPIN = 0x10,     // sleep in
             SLPOUT = 0x11,    // sleep out
             PTLON = 0x12,     // partialmode on
+
+            INVOFF = 0x20, // Inversion off
+            INVON = 0x21,  // Inversion on
 
             DISPOFF = 0x28, // display on
             DISPON = 0x29,  // display off
@@ -1348,10 +1394,12 @@ mod dsi {
     use scuffed_write::async_writeln;
 
     #[used]
+    #[unsafe(no_mangle)]
     pub static GPDR_WORDS_WRITTEN: AtomicUsize = AtomicUsize::new(0);
 
     /// MUST NOT BE HELD ACROSS AWAIT POINTS
     #[used]
+    #[unsafe(no_mangle)]
     pub static TRANSACTIONS: Mutex<
         ThreadModeRawMutex,
         heapless::Deque<Transaction, 1024>,
@@ -1563,6 +1611,19 @@ mod dsi {
         write(dsi, channel, ty, iter::once(cmd.into()).chain(tx)).await
     }
 
+    pub async fn dcs_long_write<I>(dsi: Dsihost, channel: u8, cmd: impl Into<u8>, tx: I)
+    where
+        I: IntoIterator<Item = u8>,
+    {
+        write(
+            dsi,
+            channel,
+            packet::Long::DCSWrite.into(),
+            iter::once(cmd.into()).chain(tx),
+        )
+        .await
+    }
+
     async fn write<I>(dsi: Dsihost, channel: u8, ty: packet::Type, tx: I)
     where
         I: IntoIterator<Item = u8>,
@@ -1594,7 +1655,8 @@ mod dsi {
             wait_command_fifo_empty(dsi).await;
         }
 
-        if let Some(mut remainder) = bytes.into_remainder() {
+        let mut remainder = bytes.into_remainder().expect("remainder cannot be `None`");
+        if remainder.len() > 0 {
             wait_command_fifo_not_full(dsi).await;
             write_word(
                 dsi,
