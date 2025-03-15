@@ -10,6 +10,8 @@
 #![feature(unsigned_is_multiple_of)]
 #![feature(iter_next_chunk)]
 #![feature(iter_array_chunks)]
+#![feature(array_chunks)]
+#![feature(breakpoint)]
 
 #[cfg(any())]
 pub mod bitbang;
