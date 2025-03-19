@@ -16,6 +16,8 @@ use embedded_graphics::pixelcolor::raw;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::*;
 
+use super::color::Rgba8888;
+
 /// A row-major framebuffer backed by a byte slice.
 /// Access to the backing memory is volatile and word/byte-aligned.
 #[derive(Debug)]
@@ -265,12 +267,10 @@ impl<P> Default for Framebuffer<'_, P> {
 impl<P> Dimensions for Framebuffer<'_, P> {
     fn bounding_box(&self) -> Rectangle {
         Rectangle {
-            top_left: Point { x: 0, y: 0 },
+            top_left: Point::zero(),
             size: Size {
-                width: u32::try_from(self.cols)
-                    .expect("framebuffer width out of bounds for u32"),
-                height: u32::try_from(self.rows)
-                    .expect("framebuffer height out of bounds for u32"),
+                width: u32::try_from(self.cols).unwrap_or(u32::MAX),
+                height: u32::try_from(self.rows).unwrap_or(u32::MAX),
             },
         }
     }
@@ -284,7 +284,65 @@ impl DrawTarget for Framebuffer<'_, [u8; 3]> {
     where
         I: IntoIterator<Item = embedded_graphics::Pixel<Self::Color>>,
     {
-        for Pixel(Point { x, y }, color) in pixels {
+        let pixels = pixels
+            .into_iter()
+            .map(|Pixel(position, color)| (position, color.to_ne_bytes()));
+        self.draw_iter(pixels);
+        Ok(())
+    }
+
+    fn fill_contiguous<I>(
+        &mut self,
+        area: &Rectangle,
+        colors: I,
+    ) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Self::Color>,
+    {
+        let colors = colors.into_iter().map(raw::ToBytes::to_ne_bytes);
+        self.fill_contiguous(area, colors);
+        Ok(())
+    }
+}
+
+impl DrawTarget for Framebuffer<'_, [u8; 4]> {
+    type Color = Rgba8888;
+    type Error = Infallible;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = embedded_graphics::Pixel<Self::Color>>,
+    {
+        let pixels = pixels
+            .into_iter()
+            .map(|Pixel(position, color)| (position, color.to_ne_bytes()));
+        self.draw_iter(pixels);
+        Ok(())
+    }
+
+    fn fill_contiguous<I>(
+        &mut self,
+        area: &Rectangle,
+        colors: I,
+    ) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Self::Color>,
+    {
+        let colors = colors.into_iter().map(raw::ToBytes::to_ne_bytes);
+        self.fill_contiguous(area, colors);
+        Ok(())
+    }
+}
+
+impl<P> Framebuffer<'_, P>
+where
+    P: NoUninit,
+{
+    fn draw_iter<I>(&mut self, pixels: I)
+    where
+        I: IntoIterator<Item = (Point, P)>,
+    {
+        for (Point { x, y }, color) in pixels {
             let (Ok(row), Ok(col)) = (usize::try_from(y), usize::try_from(x)) else {
                 continue;
             };
@@ -297,30 +355,26 @@ impl DrawTarget for Framebuffer<'_, [u8; 3]> {
                 continue;
             };
 
-            pixel.write(color.to_ne_bytes());
+            pixel.write(color);
         }
-
-        Ok(())
     }
 
-    fn fill_contiguous<I>(
-        &mut self,
-        &Rectangle {
+    fn fill_contiguous<I>(&mut self, area: &Rectangle, colors: I)
+    where
+        I: IntoIterator<Item = P>,
+    {
+        let Rectangle {
             top_left: Point { x, y },
             size: Size { width, height },
-        }: &Rectangle,
-        colors: I,
-    ) -> Result<(), Self::Error>
-    where
-        I: IntoIterator<Item = Self::Color>,
-    {
-        let (Ok(row), Ok(col)) = (usize::try_from(y), usize::try_from(x)) else {
-            return Ok(());
+        } = area.intersection(&self.bounding_box());
+        let (Ok(row), Ok(col)) = (
+            usize::try_from(u32::try_from(y).unwrap_or(0)),
+            usize::try_from(u32::try_from(x).unwrap_or(0)),
+        ) else {
+            return;
         };
-        let width =
-            usize::try_from(width).expect("framebuffer width out of bounds for u32");
-        let height =
-            usize::try_from(height).expect("framebuffer height out of bounds for u32");
+        let width = usize::try_from(width).unwrap_or(usize::MAX);
+        let height = usize::try_from(height).unwrap_or(usize::MAX);
 
         // for (mut pixel, color) in self
         //     .reborrow()
@@ -329,17 +383,15 @@ impl DrawTarget for Framebuffer<'_, [u8; 3]> {
         //     .flat_map(|row| row.pixels(col).take(width))
         //     .zip(colors)
         // {
-        //     pixel.write(color.to_be_bytes());
+        //     pixel.write(color);
         // }
 
-        let mut colors = colors.into_iter().map(raw::ToBytes::to_ne_bytes);
+        let mut colors = colors.into_iter();
         for row in self.reborrow().rows(row).take(height) {
             row.try_slice(col..)
                 .unwrap_or(Row::empty())
                 .write_from_iter(colors.by_ref().take(width));
         }
-
-        Ok(())
     }
 }
 
@@ -618,7 +670,7 @@ impl<P> Dimensions for Row<'_, P> {
         use embedded_graphics::primitives::*;
 
         Rectangle {
-            top_left: Point { x: 0, y: 0 },
+            top_left: Point::zero(),
             size: Size {
                 width: u32::try_from(self.len())
                     .expect("framebuffer width out of bounds for u32"),
@@ -636,7 +688,63 @@ impl DrawTarget for Row<'_, [u8; 3]> {
     where
         I: IntoIterator<Item = embedded_graphics::Pixel<Self::Color>>,
     {
-        for Pixel(Point { x, y }, color) in pixels {
+        let pixels =
+            pixels.into_iter().map(|Pixel(point, color)| (point, color.to_ne_bytes()));
+        self.draw_iter(pixels);
+        Ok(())
+    }
+
+    fn fill_contiguous<I>(
+        &mut self,
+        area: &Rectangle,
+        colors: I,
+    ) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Self::Color>,
+    {
+        let colors = colors.into_iter().map(raw::ToBytes::to_ne_bytes);
+        self.fill_contiguous(area, colors);
+        Ok(())
+    }
+}
+
+impl DrawTarget for Row<'_, [u8; 4]> {
+    type Color = Rgba8888;
+    type Error = Infallible;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = embedded_graphics::Pixel<Self::Color>>,
+    {
+        let pixels =
+            pixels.into_iter().map(|Pixel(point, color)| (point, color.to_ne_bytes()));
+        self.draw_iter(pixels);
+        Ok(())
+    }
+
+    fn fill_contiguous<I>(
+        &mut self,
+        area: &Rectangle,
+        colors: I,
+    ) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Self::Color>,
+    {
+        let colors = colors.into_iter().map(raw::ToBytes::to_ne_bytes);
+        self.fill_contiguous(area, colors);
+        Ok(())
+    }
+}
+
+impl<P> Row<'_, P>
+where
+    P: NoUninit,
+{
+    fn draw_iter<I>(&mut self, pixels: I)
+    where
+        I: IntoIterator<Item = (Point, P)>,
+    {
+        for (Point { x, y }, color) in pixels {
             if y != 0 {
                 continue;
             }
@@ -646,46 +754,35 @@ impl DrawTarget for Row<'_, [u8; 3]> {
             let Some(mut pixel) = self.try_pixel(col) else {
                 continue;
             };
-            pixel.write(color.to_ne_bytes());
+            pixel.write(color);
         }
-
-        Ok(())
     }
 
-    fn fill_contiguous<I>(
-        &mut self,
-        &Rectangle {
-            top_left: Point { x, y },
-            size: Size { width, height },
-        }: &Rectangle,
-        colors: I,
-    ) -> Result<(), Self::Error>
+    fn fill_contiguous<I>(&mut self, area: &Rectangle, colors: I)
     where
-        I: IntoIterator<Item = Self::Color>,
+        I: IntoIterator<Item = P>,
     {
-        if y != 0 {
-            return Ok(());
-        }
-        let Ok(col) = usize::try_from(x) else {
-            return Ok(());
-        };
+        let Rectangle {
+            top_left: Point { x, y: _ },
+            size: Size { width, height },
+        } = area.intersection(&self.bounding_box());
+
         if height == 0 {
-            return Ok(());
+            return;
         }
-        let width =
-            usize::try_from(width).expect("framebuffer width out of bounds for u32");
+        let col = usize::try_from(x).unwrap_or(usize::MAX);
+        let width = usize::try_from(width).unwrap_or(usize::MAX);
 
         // for (mut pixel, color) in
         //     self.reborrow().pixels(col).take(width as usize).zip(colors)
         // {
-        //     pixel.write(color.to_be_bytes());
+        //     pixel.write(color);
         // }
 
-        self.reborrow().try_slice(col..).unwrap_or(Row::empty()).write_from_iter(
-            colors.into_iter().map(raw::ToBytes::to_ne_bytes).take(width),
-        );
-
-        Ok(())
+        self.reborrow()
+            .try_slice(col..)
+            .unwrap_or(Row::empty())
+            .write_from_iter(colors.into_iter().take(width));
     }
 }
 
