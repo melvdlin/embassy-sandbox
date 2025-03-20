@@ -3,9 +3,7 @@
 use core::arch::breakpoint;
 use core::num::NonZeroU16;
 
-use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::Output;
-use embassy_stm32::pac::dsihost::Dsihost;
 use embassy_time::Timer;
 
 use super::dsi;
@@ -40,43 +38,72 @@ pub enum FrameRateHz {
     _70 = 7,
 }
 
-pub async fn init(
-    dsi: embassy_stm32::pac::dsihost::Dsihost,
-    config: Config,
-    _pixel_fifo_size: u16,
-    reset_pin: &mut Output<'_>,
-    _button: &mut ExtiInput<'_>,
-) {
-    use dsi::*;
+pub const fn ltdc_video_config(
+    rows: NonZeroU16,
+    cols: NonZeroU16,
+    orientation: Orientation,
+) -> embassy_stm32::ltdc::LtdcConfiguration {
+    match orientation {
+        | Orientation::Portrait => embassy_stm32::ltdc::LtdcConfiguration {
+            active_width: cols.get(),
+            active_height: rows.get(),
+            h_back_porch: 34,
+            h_front_porch: 34,
+            v_back_porch: 15,
+            v_front_porch: 16,
+            h_sync: 2,
+            v_sync: 1,
+            h_sync_polarity: embassy_stm32::ltdc::PolarityActive::ActiveHigh,
+            v_sync_polarity: embassy_stm32::ltdc::PolarityActive::ActiveHigh,
+            data_enable_polarity: embassy_stm32::ltdc::PolarityActive::ActiveLow,
+            pixel_clock_polarity: embassy_stm32::ltdc::PolarityEdge::RisingEdge,
+        },
+        | Orientation::Landscape => embassy_stm32::ltdc::LtdcConfiguration {
+            active_width: cols.get(),
+            active_height: rows.get(),
+            h_back_porch: 15,
+            h_front_porch: 16,
+            v_back_porch: 34,
+            v_front_porch: 34,
+            h_sync: 1,
+            v_sync: 2,
+            h_sync_polarity: embassy_stm32::ltdc::PolarityActive::ActiveHigh,
+            v_sync_polarity: embassy_stm32::ltdc::PolarityActive::ActiveHigh,
+            data_enable_polarity: embassy_stm32::ltdc::PolarityActive::ActiveLow,
+            pixel_clock_polarity: embassy_stm32::ltdc::PolarityEdge::RisingEdge,
+        },
+    }
+}
+
+pub async fn reset(pin: &mut Output<'_>) {
+    // reset active low
+    pin.set_low();
+    Timer::after_millis(20).await;
+    pin.set_high();
+    Timer::after_millis(10).await;
+}
+
+pub async fn init(dsi: &mut dsi::Dsi<'_>, config: Config) {
     let transactions = &dsi::TRANSACTIONS;
     let _transactions = transactions;
 
-    async fn write_reg(dsi: Dsihost, addr: u16, data: &[u8]) {
+    async fn write_reg(dsi: &mut dsi::Dsi<'_>, addr: u16, data: &[u8]) {
         let [base, offset] = addr.to_be_bytes();
-        dcs_write(dsi, 0, 0x00, [offset]).await;
-        dcs_write(dsi, 0, base, data.iter().copied()).await;
+        dsi.dcs_write(0, 0x00, [offset]).await;
+        dsi.dcs_write(0, base, data.iter().copied()).await;
     }
 
-    async fn read_reg(dsi: Dsihost, addr: u16, dst: &mut [u8]) {
+    async fn read_reg(dsi: &mut dsi::Dsi<'_>, addr: u16, dst: &mut [u8]) {
         let [base, offset] = addr.to_be_bytes();
-        dcs_write(dsi, 0, 0x00, [offset]).await;
-        dcs_read(dsi, 0, base, dst).await;
+        dsi.dcs_write(0, 0x00, [offset]).await;
+        dsi.dcs_read(0, base, dst).await;
     }
-
-    // reset active low
-    reset_pin.set_low();
-    Timer::after_millis(20).await;
-    reset_pin.set_high();
-    Timer::after_millis(10).await;
-
-    dsi.cr().write(|w| w.set_en(true));
-    dsi.wcr().write(|w| w.set_dsien(true));
 
     let mut id = [0; 3];
     let [id1, id2, id3] = &mut id;
-    dcs_read(dsi, 0, 0xda, core::slice::from_mut(id1)).await;
-    dcs_read(dsi, 0, 0xdb, core::slice::from_mut(id2)).await;
-    dcs_read(dsi, 0, 0xdc, core::slice::from_mut(id3)).await;
+    dsi.dcs_read(0, 0xda, core::slice::from_mut(id1)).await;
+    dsi.dcs_read(0, 0xdb, core::slice::from_mut(id2)).await;
+    dsi.dcs_read(0, 0xdc, core::slice::from_mut(id3)).await;
     assert_eq!(id, [0x40, 0x00, 0x00]);
 
     // let mut id_two = [0; 3];
@@ -389,46 +416,46 @@ pub async fn init(
 
     // exit CMD2 mode
     write_reg(dsi, 0xff00, &[0xff, 0xff, 0xff]).await;
-    dcs_write(dsi, 0, 0x00, [0x00]).await;
+    dsi.dcs_write(0, 0x00, [0x00]).await;
 
     // standard DCS initialisation
-    dcs_write(dsi, 0, cmd::Dcs::SLPOUT, None).await;
+    dsi.dcs_write(0, cmd::Dcs::SLPOUT, None).await;
     Timer::after_millis(120).await;
-    dcs_write(dsi, 0, cmd::Dcs::COLMOD, [cmd::Colmod::Rgb888 as u8]).await;
+    dsi.dcs_write(0, cmd::Dcs::COLMOD, [cmd::Colmod::Rgb888 as u8]).await;
 
     // configure orientation and screen area
     let madctr =
         cmd::Madctr::from(config.orientation) | cmd::Madctr::from(config.color_map);
-    dcs_write(dsi, 0, cmd::Dcs::MADCTR, [madctr.bits()]).await;
+    dsi.dcs_write(0, cmd::Dcs::MADCTR, [madctr.bits()]).await;
     let [col_hi, col_lo] = (config.cols.get() - 1).to_be_bytes();
     let [row_hi, row_lo] = (config.rows.get() - 1).to_be_bytes();
-    dcs_write(dsi, 0, cmd::Dcs::CASET, [0, 0, col_hi, col_lo]).await;
-    dcs_write(dsi, 0, cmd::Dcs::PASET, [0, 0, row_hi, row_lo]).await;
+    dsi.dcs_write(0, cmd::Dcs::CASET, [0, 0, col_hi, col_lo]).await;
+    dsi.dcs_write(0, cmd::Dcs::PASET, [0, 0, row_hi, row_lo]).await;
 
     // set display brightness
-    dsi::dcs_write(dsi, 0, cmd::Dcs::WRDISBV, [0x7F]).await;
+    dsi.dcs_write(0, cmd::Dcs::WRDISBV, [0x7F]).await;
 
     // display backlight control config
     let wctrld = cmd::Ctrld::BRIGHTNESS_CONTROL_ON
         | cmd::Ctrld::DIMMING_ON
         | cmd::Ctrld::BACKLIGHT_ON;
-    dcs_write(dsi, 0, cmd::Dcs::WRCTRLD, [wctrld.bits()]).await;
+    dsi.dcs_write(0, cmd::Dcs::WRCTRLD, [wctrld.bits()]).await;
 
     // content adaptive brightness control config
-    dcs_write(dsi, 0, cmd::Dcs::WRCABC, [Cabc::StillPicture as u8]).await;
+    dsi.dcs_write(0, cmd::Dcs::WRCABC, [Cabc::StillPicture as u8]).await;
 
     // set CABC minimum brightness
-    dcs_write(dsi, 0, cmd::Dcs::WRCABCMB, [0xFF]).await;
+    dsi.dcs_write(0, cmd::Dcs::WRCABCMB, [0xFF]).await;
 
     // turn display on
-    dcs_write(dsi, 0, cmd::Dcs::DISPON, None).await;
+    dsi.dcs_write(0, cmd::Dcs::DISPON, None).await;
 
-    dcs_write(dsi, 0, cmd::Dcs::NOP, None).await;
+    dsi.dcs_write(0, cmd::Dcs::NOP, None).await;
 
     // send GRAM memory write to initiate frame write
     // via other DSI commands sent by LTDC
 
-    dcs_write(dsi, 0, cmd::Dcs::RAMWR, None).await;
+    dsi.dcs_write(0, cmd::Dcs::RAMWR, None).await;
 }
 
 mod cmd {

@@ -49,3 +49,9 @@ mod tests {
         assert_eq!(s.trim_ascii_end_mut(), b"");
     }
 }
+
+pub async fn until(mut p: impl FnMut() -> bool) {
+    while !p() {
+        embassy_futures::yield_now().await;
+    }
+}

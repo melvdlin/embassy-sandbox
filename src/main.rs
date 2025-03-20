@@ -18,6 +18,7 @@ use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::join::join3;
 use embassy_net::Ipv4Address;
+use embassy_sandbox::graphics::color::Rgba8888;
 use embassy_sandbox::graphics::display;
 use embassy_sandbox::*;
 use embassy_stm32::bind_interrupts;
@@ -62,7 +63,7 @@ async fn main(spawner: Spawner) -> ! {
 }
 
 async fn _main(spawner: Spawner) -> ! {
-    let (config, _ahb_freq, hse_freq) = config();
+    let (config, _ahb, hse, ltdc_clock) = config();
     let p = embassy_stm32::init(config);
     let mut _button =
         embassy_stm32::exti::ExtiInput::new(p.PA0, p.EXTI0, gpio::Pull::Down);
@@ -138,9 +139,9 @@ async fn _main(spawner: Spawner) -> ! {
         DHCP_UP.dyn_receiver().expect("not enough watch receivers available"),
     );
 
-    const PIXELS: usize = display::WIDTH as usize * display::HEIGHT as usize * 3;
-    let buf: &'static mut [MaybeUninit<u8>] = &mut memory[..PIXELS * 3];
-    let mut disp = display::init(
+    const PIXELS: usize = display::WIDTH as usize * display::HEIGHT as usize * 4;
+    let buf: &'static mut [MaybeUninit<u8>] = &mut memory[..PIXELS * 4];
+    let mut disp = display::Display::<Rgba8888>::init(
         p.DSIHOST,
         p.LTDC,
         buf,
@@ -151,12 +152,18 @@ async fn _main(spawner: Spawner) -> ! {
             rows: NonZeroU16::new(display::HEIGHT).expect("height must be nonzero"),
             cols: NonZeroU16::new(display::WIDTH).expect("width must be nonzero"),
         },
-        hse_freq,
-        &mut lcd_reset_pin,
+        hse,
+        ltdc_clock,
+        lcd_reset_pin,
+        p.PJ2,
         &mut _button,
     )
     .await;
-    Ok(()) = disp.fill_solid(&disp.bounding_box(), Rgb888::new(0x57, 0x00, 0x7F));
+    let mut framebuffer = disp.framebuffer();
+    Ok(()) = framebuffer.fill_solid(
+        &framebuffer.bounding_box(),
+        Rgba8888::new(0x7F, 0x00, 0x57, 0x00),
+    );
 
     join(blink, net).await.0
 }
@@ -240,7 +247,7 @@ where
 }
 
 // noinspection ALL
-fn config() -> (embassy_stm32::Config, Hertz, Hertz) {
+fn config() -> (embassy_stm32::Config, Hertz, Hertz, Hertz) {
     use embassy_stm32::rcc::*;
     let mut config = embassy_stm32::Config::default();
     let hse_freq = Hertz::mhz(25);
@@ -284,7 +291,7 @@ fn config() -> (embassy_stm32::Config, Hertz, Hertz) {
         rcc.ahb_pre = AHBPrescaler::DIV2;
         rcc
     };
-    (config, Hertz::mhz(216), hse_freq)
+    (config, Hertz::mhz(216), hse_freq, Hertz(384 / 7 / 2))
 }
 
 // D0  = PC9
