@@ -11,15 +11,16 @@ use core::arch::breakpoint;
 use core::mem::MaybeUninit;
 use core::num::NonZeroU16;
 use core::panic::PanicInfo;
+use core::sync::atomic;
 use core::sync::atomic::Ordering;
-use core::sync::atomic::{self};
 
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::join::join3;
 use embassy_net::Ipv4Address;
-use embassy_sandbox::graphics::color::Rgba8888;
+use embassy_sandbox::graphics::color::Argb8888;
 use embassy_sandbox::graphics::display;
+use embassy_sandbox::graphics::display::LayerConfig;
 use embassy_sandbox::*;
 use embassy_stm32::bind_interrupts;
 #[allow(unused_imports)]
@@ -32,7 +33,6 @@ use embassy_sync::watch;
 use embassy_sync::watch::Watch;
 use embassy_time::Duration;
 use embassy_time::Timer;
-use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::Dimensions;
 use embedded_graphics::prelude::DrawTarget;
 use rand_core::RngCore;
@@ -67,8 +67,7 @@ async fn _main(spawner: Spawner) -> ! {
     let p = embassy_stm32::init(config);
     let mut _button =
         embassy_stm32::exti::ExtiInput::new(p.PA0, p.EXTI0, gpio::Pull::Down);
-    let mut lcd_reset_pin =
-        gpio::Output::new(p.PJ15, gpio::Level::High, gpio::Speed::High);
+    let lcd_reset_pin = gpio::Output::new(p.PJ15, gpio::Level::High, gpio::Speed::High);
 
     // 128 Mib
     const SDRAM_SIZE: usize = (128 / 8) << 20;
@@ -139,19 +138,20 @@ async fn _main(spawner: Spawner) -> ! {
         DHCP_UP.dyn_receiver().expect("not enough watch receivers available"),
     );
 
-    const PIXELS: usize = display::WIDTH as usize * display::HEIGHT as usize * 4;
+    const PIXELS: usize = display::WIDTH as usize * display::HEIGHT as usize;
     let buf: &'static mut [MaybeUninit<u8>] = &mut memory[..PIXELS * 4];
-    let mut disp = display::Display::<Rgba8888>::init(
+    let display_config = display::Config {
+        framerate: display::FrameRateHz::_65,
+        orientation: display::Orientation::Landscape,
+        color_map: display::ColorMap::Rgb,
+        rows: NonZeroU16::new(display::HEIGHT).expect("height must be nonzero"),
+        cols: NonZeroU16::new(display::WIDTH).expect("width must be nonzero"),
+    };
+    let mut disp = display::Display::<Argb8888>::init(
         p.DSIHOST,
         p.LTDC,
         buf,
-        display::Config {
-            framerate: display::FrameRateHz::_65,
-            orientation: display::Orientation::Landscape,
-            color_map: display::ColorMap::Rgb,
-            rows: NonZeroU16::new(display::HEIGHT).expect("height must be nonzero"),
-            cols: NonZeroU16::new(display::WIDTH).expect("width must be nonzero"),
-        },
+        &display_config,
         hse,
         ltdc_clock,
         lcd_reset_pin,
@@ -159,10 +159,25 @@ async fn _main(spawner: Spawner) -> ! {
         &mut _button,
     )
     .await;
+    let framebuffer_ptr = disp.framebuffer().as_ptr().as_ptr().cast_const().cast();
+    disp.init_layer(
+        embassy_stm32::ltdc::LtdcLayer::Layer1,
+        framebuffer_ptr,
+        &LayerConfig {
+            x_offset: 0,
+            y_offset: 0,
+            width: display_config.cols.get(),
+            height: display_config.rows.get(),
+            pixel_format: embassy_stm32::ltdc::PixelFormat::ARGB8888,
+            alpha: 0xFF,
+            default_color: Argb8888::from_u32(0xFF7F0057),
+        },
+    )
+    .await;
     let mut framebuffer = disp.framebuffer();
     Ok(()) = framebuffer.fill_solid(
         &framebuffer.bounding_box(),
-        Rgba8888::new(0x7F, 0x00, 0x57, 0x00),
+        Argb8888::new(0x7F, 0x00, 0x57, 0x00),
     );
 
     join(blink, net).await.0
@@ -291,7 +306,12 @@ fn config() -> (embassy_stm32::Config, Hertz, Hertz, Hertz) {
         rcc.ahb_pre = AHBPrescaler::DIV2;
         rcc
     };
-    (config, Hertz::mhz(216), hse_freq, Hertz(384 / 7 / 2))
+    (
+        config,
+        Hertz::mhz(216),
+        hse_freq,
+        Hertz(384 * 1_000_000 / 7 / 2),
+    )
 }
 
 // D0  = PC9

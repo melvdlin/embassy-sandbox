@@ -5,6 +5,7 @@ use core::iter;
 use core::sync::atomic;
 use core::sync::atomic::AtomicUsize;
 
+use bitflags::bitflags;
 use embassy_futures::yield_now;
 use embassy_stm32::gpio;
 use embassy_stm32::ltdc;
@@ -27,6 +28,25 @@ const DSI: PacDsi = pac::DSIHOST;
 pub struct Dsi<'a> {
     _peripheral: Peripheral,
     _te_pin: gpio::Flex<'a>,
+}
+
+/// Flow control settings
+#[derive(Debug)]
+#[derive(Clone, Copy)]
+#[derive(PartialEq, Eq)]
+#[derive(Hash)]
+#[derive(Default)]
+pub struct FlowControl {
+    /// EoTp transmission enable
+    pub ettxe: bool,
+    /// EoTp reception enable
+    pub etrxe: bool,
+    /// Bus-turn-around enable
+    pub btae: bool,
+    /// ECC reception enable
+    pub eccrxe: bool,
+    /// CRC reception enable
+    pub crcrxe: bool,
 }
 
 pub mod video_mode {
@@ -282,6 +302,16 @@ impl Dsi<'_> {
         DSI.ier1().write_value(regs::Ier1(0));
     }
 
+    pub fn config_flow_control(&mut self, flow_control: FlowControl) {
+        DSI.pcr().modify(|w| {
+            w.set_ettxe(flow_control.ettxe);
+            w.set_etrxe(flow_control.etrxe);
+            w.set_btae(flow_control.btae);
+            w.set_eccrxe(flow_control.eccrxe);
+            w.set_crcrxe(flow_control.crcrxe);
+        })
+    }
+
     pub async fn video_mode_setup(
         &mut self,
         cfg: &video_mode::Config,
@@ -320,8 +350,9 @@ impl Dsi<'_> {
         DSI.lcolcr().modify(|w| w.set_colc(0b101));
         DSI.wcfgr().modify(|w| w.set_colmux(0b101));
 
-        let lane_byte_cycles =
-            |lcd_cycles: u16| lcd_cycles as u32 * lane_byte_clock.0 / ltdc_clock.0;
+        let lane_byte_cycles = |lcd_cycles: u16| {
+            lcd_cycles as u32 * (lane_byte_clock.0 / 1000) / (ltdc_clock.0 / 1000)
+        };
 
         // HSync active in lane byte clock cycles
         let hsa = lane_byte_cycles(cfg.ltdc.h_sync);

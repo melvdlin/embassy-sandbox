@@ -11,6 +11,7 @@ mod dsi;
 mod ltdc;
 mod otm8009a;
 pub use dsi::InterruptHandler as DSIInterruptHandler;
+pub use ltdc::LayerConfig;
 pub use otm8009a::ColorMap;
 pub use otm8009a::Config;
 pub use otm8009a::FrameRateHz;
@@ -35,7 +36,7 @@ where
         dsi: dsi::Peripheral,
         ltdc: ltdc::Peripheral,
         buf: &'a mut [MaybeUninit<u8>],
-        config: otm8009a::Config,
+        config: &otm8009a::Config,
         hse: Hertz,
         ltdc_clock: Hertz,
         mut reset_pin: Output<'a>,
@@ -78,12 +79,10 @@ where
         let mut dsi = dsi::Dsi::init(dsi, te_pin);
         dsi.clock_setup(hse, Hertz::khz(62_500), false, 2).await;
         dsi.video_mode_setup(&video_cfg, lane_byte_clock, ltdc_clock).await;
-        let mut ltdc = ltdc::Ltdc::init(ltdc, background, &video_cfg.ltdc).await;
+        let ltdc = ltdc::Ltdc::init(ltdc, background, &video_cfg.ltdc).await;
         dsi.enable();
 
         otm8009a::init(&mut dsi, config).await;
-
-        // TODO: ltdc layer cfg
 
         #[allow(unreachable_code)]
         Self {
@@ -97,5 +96,14 @@ where
         &mut self,
     ) -> Framebuffer<'_, <C::Raw as pixelcolor::raw::ToBytes>::Bytes> {
         self.framebuffer.reborrow()
+    }
+
+    pub async fn init_layer(
+        &mut self,
+        layer: embassy_stm32::ltdc::LtdcLayer,
+        framebuffer: *const (),
+        cfg: &ltdc::LayerConfig,
+    ) {
+        self.ltdc.config_layer(layer, framebuffer, cfg).await
     }
 }

@@ -16,7 +16,7 @@ use embedded_graphics::pixelcolor::raw;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::*;
 
-use super::color::Rgba8888;
+use super::color::Argb8888;
 
 /// A row-major framebuffer backed by a byte slice.
 /// Access to the backing memory is volatile and word/byte-aligned.
@@ -306,7 +306,7 @@ impl DrawTarget for Framebuffer<'_, [u8; 3]> {
 }
 
 impl DrawTarget for Framebuffer<'_, [u8; 4]> {
-    type Color = Rgba8888;
+    type Color = Argb8888;
     type Error = Infallible;
 
     fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
@@ -709,7 +709,7 @@ impl DrawTarget for Row<'_, [u8; 3]> {
 }
 
 impl DrawTarget for Row<'_, [u8; 4]> {
-    type Color = Rgba8888;
+    type Color = Argb8888;
     type Error = Infallible;
 
     fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>

@@ -7,6 +7,7 @@ use embassy_stm32::gpio::Output;
 use embassy_time::Timer;
 
 use super::dsi;
+use crate::graphics::display::dsi::FlowControl;
 
 pub const WIDTH: u16 = 800;
 pub const HEIGHT: u16 = 480;
@@ -83,7 +84,7 @@ pub async fn reset(pin: &mut Output<'_>) {
     Timer::after_millis(10).await;
 }
 
-pub async fn init(dsi: &mut dsi::Dsi<'_>, config: Config) {
+pub async fn init(dsi: &mut dsi::Dsi<'_>, config: &Config) {
     let transactions = &dsi::TRANSACTIONS;
     let _transactions = transactions;
 
@@ -99,6 +100,10 @@ pub async fn init(dsi: &mut dsi::Dsi<'_>, config: Config) {
         dsi.dcs_read(0, base, dst).await;
     }
 
+    dsi.config_flow_control(FlowControl {
+        btae: true,
+        ..Default::default()
+    });
     let mut id = [0; 3];
     let [id1, id2, id3] = &mut id;
     dsi.dcs_read(0, 0xda, core::slice::from_mut(id1)).await;
@@ -388,31 +393,21 @@ pub async fn init(dsi: &mut dsi::Dsi<'_>, config: Config) {
     // set PWM freq to 19.531kHz
     write_reg(dsi, 0xc6b1, &[0x06]).await;
 
+    let gamma_table = &[
+        0x00, 0x09, 0x0F, 0x0E, 0x07, 0x10, 0x0B, 0x0A, //
+        0x04, 0x07, 0x0B, 0x08, 0x0F, 0x10, 0x0A, 0x01,
+    ];
     // Gamma correction 2.2+ table
-    write_reg(
-        dsi,
-        0xe100,
-        &[
-            0x00, 0x09, 0x0F, 0x0E, 0x07, 0x10, 0x0B, 0x0A, //
-            0x04, 0x07, 0x0B, 0x08, 0x0F, 0x10, 0x0A, 0x01,
-        ],
-    )
-    .await;
+    write_reg(dsi, 0xe100, gamma_table).await;
     // Gamma correction 2.2- table
-    write_reg(
-        dsi,
-        0xe200,
-        &[
-            0x00, 0x09, 0x0F, 0x0E, 0x07, 0x10, 0x0B, 0x0A, //
-            0x04, 0x07, 0x0B, 0x08, 0x0F, 0x10, 0x0A, 0x01,
-        ],
-    )
-    .await;
+    write_reg(dsi, 0xe200, gamma_table).await;
 
-    let mut gamma = [0x00; 16];
-    read_reg(dsi, 0xe100, &mut gamma).await;
-    // gamma.fill(0);
-    // read_reg(dsi, 0xe200, &mut gamma).await;
+    let mut gamma_readback = [0x00; 16];
+    read_reg(dsi, 0xe100, &mut gamma_readback).await;
+    assert_eq!(&gamma_readback, gamma_table);
+    gamma_readback.fill(0);
+    read_reg(dsi, 0xe200, &mut gamma_readback).await;
+    assert_eq!(&gamma_readback, gamma_table);
 
     // exit CMD2 mode
     write_reg(dsi, 0xff00, &[0xff, 0xff, 0xff]).await;
