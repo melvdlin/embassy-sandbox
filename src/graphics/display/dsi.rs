@@ -340,10 +340,13 @@ impl Dsi<'_> {
         // configure control signal polarity
         let high = ltdc::PolarityActive::ActiveHigh;
         let low = ltdc::PolarityActive::ActiveLow;
+        // 0 => high, 1 => low
+        // DE is inverted
+        let pol = |ltdc| low == ltdc;
         DSI.lpcr().modify(|w| {
-            w.set_dep(cfg.ltdc.data_enable_polarity == low);
-            w.set_vsp(cfg.ltdc.v_sync_polarity == high);
-            w.set_hsp(cfg.ltdc.h_sync_polarity == high);
+            w.set_dep(!pol(cfg.ltdc.data_enable_polarity));
+            w.set_vsp(pol(cfg.ltdc.v_sync_polarity));
+            w.set_hsp(pol(cfg.ltdc.h_sync_polarity));
         });
 
         // set DSI host and wrapper to use 24 bit color

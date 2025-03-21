@@ -79,7 +79,7 @@ where
         let mut dsi = dsi::Dsi::init(dsi, te_pin);
         dsi.clock_setup(hse, Hertz::khz(62_500), false, 2).await;
         dsi.video_mode_setup(&video_cfg, lane_byte_clock, ltdc_clock).await;
-        let ltdc = ltdc::Ltdc::init(ltdc, background, &video_cfg.ltdc).await;
+        let ltdc = ltdc::Ltdc::init(ltdc, background, &video_cfg.ltdc);
         dsi.enable();
 
         otm8009a::init(&mut dsi, config).await;
@@ -98,12 +98,16 @@ where
         self.framebuffer.reborrow()
     }
 
-    pub async fn init_layer(
+    pub fn init_layer(
         &mut self,
         layer: embassy_stm32::ltdc::LtdcLayer,
         framebuffer: *const (),
         cfg: &ltdc::LayerConfig,
     ) {
-        self.ltdc.config_layer(layer, framebuffer, cfg).await
+        self.ltdc.config_layer(layer, framebuffer, cfg);
+    }
+
+    pub fn enable_layer(&mut self, layer: embassy_stm32::ltdc::LtdcLayer, enable: bool) {
+        self.ltdc.enable_layer(layer, enable);
     }
 }

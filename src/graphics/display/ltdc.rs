@@ -30,7 +30,7 @@ pub struct LayerConfig {
 }
 
 impl Ltdc {
-    pub async fn init(
+    pub fn init(
         ltdc: Peripheral,
         background: RgbColor,
         cfg: &embassy_stm32::ltdc::LtdcConfiguration,
@@ -40,16 +40,16 @@ impl Ltdc {
         // configure HS, VS, DE and PC polarity
         LTDC.gcr().modify(|w| {
             w.set_hspol(match cfg.h_sync_polarity {
-                | embassy_stm32::ltdc::PolarityActive::ActiveLow => Hspol::ACTIVE_HIGH,
-                | embassy_stm32::ltdc::PolarityActive::ActiveHigh => Hspol::ACTIVE_LOW,
+                | embassy_stm32::ltdc::PolarityActive::ActiveLow => Hspol::ACTIVE_LOW,
+                | embassy_stm32::ltdc::PolarityActive::ActiveHigh => Hspol::ACTIVE_HIGH,
             });
             w.set_vspol(match cfg.v_sync_polarity {
-                | embassy_stm32::ltdc::PolarityActive::ActiveLow => Vspol::ACTIVE_HIGH,
-                | embassy_stm32::ltdc::PolarityActive::ActiveHigh => Vspol::ACTIVE_LOW,
+                | embassy_stm32::ltdc::PolarityActive::ActiveLow => Vspol::ACTIVE_LOW,
+                | embassy_stm32::ltdc::PolarityActive::ActiveHigh => Vspol::ACTIVE_HIGH,
             });
             w.set_depol(match cfg.data_enable_polarity {
-                | embassy_stm32::ltdc::PolarityActive::ActiveLow => Depol::ACTIVE_HIGH,
-                | embassy_stm32::ltdc::PolarityActive::ActiveHigh => Depol::ACTIVE_LOW,
+                | embassy_stm32::ltdc::PolarityActive::ActiveLow => Depol::ACTIVE_LOW,
+                | embassy_stm32::ltdc::PolarityActive::ActiveHigh => Depol::ACTIVE_HIGH,
             });
             w.set_pcpol(match cfg.pixel_clock_polarity {
                 | embassy_stm32::ltdc::PolarityEdge::FallingEdge => Pcpol::FALLING_EDGE,
@@ -99,77 +99,88 @@ impl Ltdc {
         // TODO: enable and handle error IRs
 
         // enable LTDC
-        LTDC.gcr().modify(|w| w.set_ltdcen(true));
+        let mut ltdc = Ltdc { _peripheral: ltdc };
 
-        Ltdc { _peripheral: ltdc }
+        ltdc.enable(true);
+
+        ltdc
     }
 
-    pub async fn config_layer(
+    pub fn config_layer(
         &mut self,
         layer: embassy_stm32::ltdc::LtdcLayer,
         framebuffer: *const (),
         cfg: &LayerConfig,
     ) {
-        let h_win_start = cfg.x_offset + LTDC.bpcr().read().ahbp() + 1;
+        let h_win_start = cfg.x_offset + LTDC.bpcr().read().ahbp();
         let h_win_stop = h_win_start + cfg.width;
-        let v_win_start = cfg.y_offset + LTDC.bpcr().read().avbp() + 1;
+        let v_win_start = cfg.y_offset + LTDC.bpcr().read().avbp();
         let v_win_stop = v_win_start + cfg.height;
 
-        let layer = LTDC.layer(layer as usize);
+        {
+            let layer = LTDC.layer(layer as usize);
 
-        // horizontal and vertical window start and stop
-        layer.whpcr().write(|w| {
-            w.set_whstpos(h_win_start);
-            w.set_whsppos(h_win_stop);
-        });
-        layer.wvpcr().write(|w| {
-            w.set_wvstpos(v_win_start);
-            w.set_wvsppos(v_win_stop);
-        });
+            // horizontal and vertical window start and stop
+            layer.whpcr().write(|w| {
+                w.set_whstpos(h_win_start);
+                w.set_whsppos(h_win_stop);
+            });
+            layer.wvpcr().write(|w| {
+                w.set_wvstpos(v_win_start);
+                w.set_wvsppos(v_win_stop);
+            });
 
-        // pixel format
-        layer.pfcr().write(|w| w.set_pf(vals::Pf::from_bits(cfg.pixel_format as u8)));
+            // pixel format
+            layer.pfcr().write(|w| w.set_pf(vals::Pf::from_bits(cfg.pixel_format as u8)));
 
-        // default color
-        layer.dccr().write(|w| {
-            let Argb8888 {
-                alpha,
-                red,
-                green,
-                blue,
-            } = cfg.default_color;
-            w.set_dcalpha(alpha);
-            w.set_dcred(red);
-            w.set_dcgreen(green);
-            w.set_dcblue(blue);
-        });
+            // default color
+            layer.dccr().write(|w| {
+                let Argb8888 {
+                    alpha,
+                    red,
+                    green,
+                    blue,
+                } = cfg.default_color;
+                w.set_dcalpha(alpha);
+                w.set_dcred(red);
+                w.set_dcgreen(green);
+                w.set_dcblue(blue);
+            });
 
-        // alpha multiplier
-        layer.cacr().write(|w| w.set_consta(cfg.alpha));
+            // alpha multiplier
+            layer.cacr().write(|w| w.set_consta(cfg.alpha));
 
-        // blending factors (color alpha x alpha multiplier)
-        layer.bfcr().write(|w| {
-            w.set_bf1(vals::Bf1::PIXEL);
-            w.set_bf2(vals::Bf2::PIXEL);
-        });
+            // blending factors (color alpha x alpha multiplier)
+            layer.bfcr().write(|w| {
+                w.set_bf1(vals::Bf1::PIXEL);
+                w.set_bf2(vals::Bf2::PIXEL);
+            });
 
-        // framebuffer start address
-        layer.cfbar().write(|w| w.set_cfbadd(framebuffer as u32));
+            // framebuffer start address
+            layer.cfbar().write(|w| w.set_cfbadd(framebuffer as u32));
 
-        // frame buffer line length and pitch (offset between start of subsequent lines)
-        let pixel_size = cfg.pixel_format.bytes_per_pixel() as u16;
-        layer.cfblr().write(|w| {
-            w.set_cfbll(cfg.width * pixel_size + 3);
-            w.set_cfbp(cfg.width * pixel_size);
-        });
+            // frame buffer line length and pitch (offset between start of subsequent lines)
+            let pixel_size = cfg.pixel_format.bytes_per_pixel() as u16;
+            layer.cfblr().write(|w| {
+                w.set_cfbll(cfg.width * pixel_size + 3);
+                w.set_cfbp(cfg.width * pixel_size);
+            });
 
-        // frame buffer line count
-        layer.cfblnr().write(|w| {
-            w.set_cfblnbr(cfg.height);
-        });
+            // frame buffer line count
+            layer.cfblnr().write(|w| {
+                w.set_cfblnbr(cfg.height);
+            });
+        }
 
-        layer.cr().write(|w| w.set_len(true));
+        self.enable_layer(layer, true);
+    }
 
+    pub fn enable(&mut self, enable: bool) {
+        LTDC.gcr().modify(|w| w.set_ltdcen(enable));
+    }
+
+    pub fn enable_layer(&mut self, layer: embassy_stm32::ltdc::LtdcLayer, enable: bool) {
+        LTDC.layer(layer as usize).cr().modify(|w| w.set_len(enable));
         LTDC.srcr().modify(|w| w.set_imr(vals::Imr::RELOAD));
     }
 }

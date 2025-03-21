@@ -170,15 +170,12 @@ async fn _main(spawner: Spawner) -> ! {
             height: display_config.rows.get(),
             pixel_format: embassy_stm32::ltdc::PixelFormat::ARGB8888,
             alpha: 0xFF,
-            default_color: Argb8888::from_u32(0xFF7F0057),
+            default_color: Argb8888::from_u32(0x00000000),
         },
-    )
-    .await;
-    let mut framebuffer = disp.framebuffer();
-    Ok(()) = framebuffer.fill_solid(
-        &framebuffer.bounding_box(),
-        Argb8888::new(0x7F, 0x00, 0x57, 0x00),
     );
+    let mut framebuffer = disp.framebuffer();
+    Ok(()) = framebuffer
+        .fill_solid(&framebuffer.bounding_box(), Argb8888::from_u32(0xFF7F0057));
 
     join(blink, net).await.0
 }

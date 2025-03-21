@@ -45,7 +45,7 @@ pub const fn ltdc_video_config(
     orientation: Orientation,
 ) -> embassy_stm32::ltdc::LtdcConfiguration {
     match orientation {
-        | Orientation::Portrait => embassy_stm32::ltdc::LtdcConfiguration {
+        | _ | Orientation::Portrait => embassy_stm32::ltdc::LtdcConfiguration {
             active_width: cols.get(),
             active_height: rows.get(),
             h_back_porch: 34,
@@ -450,7 +450,7 @@ pub async fn init(dsi: &mut dsi::Dsi<'_>, config: &Config) {
     // send GRAM memory write to initiate frame write
     // via other DSI commands sent by LTDC
 
-    dsi.dcs_write(0, cmd::Dcs::RAMWR, None).await;
+    // dsi.dcs_write(0, cmd::Dcs::RAMWR, None).await;
 }
 
 mod cmd {
