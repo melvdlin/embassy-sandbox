@@ -1,3 +1,4 @@
+pub use embassy_stm32::ltdc::LtdcLayer as Layer;
 use embassy_stm32::ltdc::RgbColor;
 use embassy_stm32::pac;
 use embassy_stm32::pac::ltdc::vals;
@@ -5,7 +6,6 @@ use embassy_stm32::pac::ltdc::vals::Depol;
 use embassy_stm32::pac::ltdc::vals::Hspol;
 use embassy_stm32::pac::ltdc::vals::Pcpol;
 use embassy_stm32::pac::ltdc::vals::Vspol;
-use embassy_stm32::pac::spdifrx::regs;
 use embassy_stm32::peripherals;
 
 use crate::graphics::color::Argb8888;
@@ -27,6 +27,15 @@ pub struct LayerConfig {
     pub pixel_format: embassy_stm32::ltdc::PixelFormat,
     pub alpha: u8,
     pub default_color: Argb8888,
+}
+
+pub fn layer(layer: usize) -> Layer {
+    assert!(layer < 2);
+    match layer {
+        | 0 => Layer::Layer1,
+        | 1 => Layer::Layer2,
+        | _ => unreachable!(),
+    }
 }
 
 impl Ltdc {
@@ -108,7 +117,7 @@ impl Ltdc {
 
     pub fn config_layer(
         &mut self,
-        layer: embassy_stm32::ltdc::LtdcLayer,
+        layer: Layer,
         framebuffer: *const (),
         cfg: &LayerConfig,
     ) {
@@ -171,15 +180,13 @@ impl Ltdc {
                 w.set_cfblnbr(cfg.height);
             });
         }
-
-        self.enable_layer(layer, true);
     }
 
     pub fn enable(&mut self, enable: bool) {
         LTDC.gcr().modify(|w| w.set_ltdcen(enable));
     }
 
-    pub fn enable_layer(&mut self, layer: embassy_stm32::ltdc::LtdcLayer, enable: bool) {
+    pub fn enable_layer(&mut self, layer: Layer, enable: bool) {
         LTDC.layer(layer as usize).cr().modify(|w| w.set_len(enable));
         LTDC.srcr().modify(|w| w.set_imr(vals::Imr::RELOAD));
     }

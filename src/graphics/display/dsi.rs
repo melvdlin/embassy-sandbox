@@ -5,7 +5,6 @@ use core::iter;
 use core::sync::atomic;
 use core::sync::atomic::AtomicUsize;
 
-use bitflags::bitflags;
 use embassy_futures::yield_now;
 use embassy_stm32::gpio;
 use embassy_stm32::ltdc;
@@ -338,7 +337,7 @@ impl Dsi<'_> {
         DSI.lvcidr().modify(|w| w.set_vcid(cfg.channel));
 
         // configure control signal polarity
-        let high = ltdc::PolarityActive::ActiveHigh;
+        let _high = ltdc::PolarityActive::ActiveHigh;
         let low = ltdc::PolarityActive::ActiveLow;
         // 0 => high, 1 => low
         // DE is inverted

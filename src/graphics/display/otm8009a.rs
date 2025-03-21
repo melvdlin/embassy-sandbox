@@ -2,6 +2,7 @@
 #[allow(unused_imports)]
 use core::arch::breakpoint;
 use core::num::NonZeroU16;
+use core::slice;
 
 use embassy_stm32::gpio::Output;
 use embassy_time::Timer;
@@ -44,6 +45,7 @@ pub const fn ltdc_video_config(
     cols: NonZeroU16,
     orientation: Orientation,
 ) -> embassy_stm32::ltdc::LtdcConfiguration {
+    #[allow(clippy::wildcard_in_or_patterns, unreachable_patterns)]
     match orientation {
         | _ | Orientation::Portrait => embassy_stm32::ltdc::LtdcConfiguration {
             active_width: cols.get(),
@@ -440,7 +442,7 @@ pub async fn init(dsi: &mut dsi::Dsi<'_>, config: &Config) {
     dsi.dcs_write(0, cmd::Dcs::WRCABC, [Cabc::StillPicture as u8]).await;
 
     // set CABC minimum brightness
-    dsi.dcs_write(0, cmd::Dcs::WRCABCMB, [0xFF]).await;
+    dsi.dcs_write(0, cmd::Dcs::WRCABCMB, [0x00]).await;
 
     // turn display on
     dsi.dcs_write(0, cmd::Dcs::DISPON, None).await;
@@ -449,8 +451,33 @@ pub async fn init(dsi: &mut dsi::Dsi<'_>, config: &Config) {
 
     // send GRAM memory write to initiate frame write
     // via other DSI commands sent by LTDC
+    // possibly redundant
 
     // dsi.dcs_write(0, cmd::Dcs::RAMWR, None).await;
+}
+
+pub async fn set_brightness(dsi: &mut dsi::Dsi<'_>, brightness: u8) {
+    dsi.dcs_write(0, cmd::Dcs::WRDISBV, [brightness]).await
+}
+
+pub async fn enable(dsi: &mut dsi::Dsi<'_>, enable: bool) {
+    if enable {
+        dsi.dcs_write(0, cmd::Dcs::DISPON, None).await;
+    } else {
+        dsi.dcs_write(0, cmd::Dcs::DISPOFF, None).await;
+    }
+    let mut power_mode = 0;
+    dsi.dcs_read(0, 0x0A, slice::from_mut(&mut power_mode)).await;
+    assert_eq!((power_mode >> 2) & 1, enable as u8);
+}
+
+pub async fn sleep(dsi: &mut dsi::Dsi<'_>, sleep: bool) {
+    if sleep {
+        Timer::after_millis(120).await;
+        dsi.dcs_write(0, cmd::Dcs::SLPIN, None).await;
+    } else {
+        dsi.dcs_write(0, cmd::Dcs::SLPOUT, None).await;
+    }
 }
 
 mod cmd {

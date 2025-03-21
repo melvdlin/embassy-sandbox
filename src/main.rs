@@ -33,6 +33,7 @@ use embassy_sync::watch;
 use embassy_sync::watch::Watch;
 use embassy_time::Duration;
 use embassy_time::Timer;
+use embedded_graphics::geometry::AnchorPoint;
 use embedded_graphics::prelude::Dimensions;
 use embedded_graphics::prelude::DrawTarget;
 use rand_core::RngCore;
@@ -160,8 +161,9 @@ async fn _main(spawner: Spawner) -> ! {
     )
     .await;
     let framebuffer_ptr = disp.framebuffer().as_ptr().as_ptr().cast_const().cast();
+    let layer_1 = embassy_stm32::ltdc::LtdcLayer::Layer1;
     disp.init_layer(
-        embassy_stm32::ltdc::LtdcLayer::Layer1,
+        layer_1,
         framebuffer_ptr,
         &LayerConfig {
             x_offset: 0,
@@ -173,10 +175,35 @@ async fn _main(spawner: Spawner) -> ! {
             default_color: Argb8888::from_u32(0x00000000),
         },
     );
+    disp.enable_layer(layer_1, true);
     let mut framebuffer = disp.framebuffer();
+    let bounds = framebuffer.bounding_box();
     Ok(()) = framebuffer
         .fill_solid(&framebuffer.bounding_box(), Argb8888::from_u32(0xFF7F0057));
 
+    Timer::after_secs(1).await;
+    disp.enable_layer(layer_1, false);
+    Timer::after_secs(1).await;
+    disp.enable_layer(layer_1, true);
+    Timer::after_secs(1).await;
+    disp.enable(false).await;
+    Timer::after_secs(1).await;
+    disp.enable(true).await;
+    Timer::after_secs(1).await;
+    disp.sleep(true).await;
+    Timer::after_secs(1).await;
+    disp.sleep(false).await;
+    Timer::after_secs(1).await;
+    disp.set_brightness(0xFF).await;
+    Timer::after_secs(1).await;
+    disp.set_brightness(0x00).await;
+    Timer::after_secs(1).await;
+    disp.set_brightness(0x7F).await;
+    let mut framebuffer = disp.framebuffer();
+    Ok(()) = framebuffer.fill_solid(
+        &bounds.resized(bounds.size / 2, AnchorPoint::Center),
+        Argb8888::from_u32(0xFF660033),
+    );
     join(blink, net).await.0
 }
 

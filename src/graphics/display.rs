@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use core::array;
 use core::mem::MaybeUninit;
 
 use embassy_stm32::exti::ExtiInput;
@@ -11,6 +12,7 @@ mod dsi;
 mod ltdc;
 mod otm8009a;
 pub use dsi::InterruptHandler as DSIInterruptHandler;
+pub use ltdc::Layer;
 pub use ltdc::LayerConfig;
 pub use otm8009a::ColorMap;
 pub use otm8009a::Config;
@@ -21,10 +23,21 @@ pub use otm8009a::WIDTH;
 
 use super::framebuffer::Framebuffer;
 
+#[derive(Debug)]
+#[derive(Clone, Copy)]
+#[derive(PartialEq, Eq)]
+#[derive(Hash)]
+#[derive(Default)]
+struct LayerState {
+    init: bool,
+    enable: bool,
+}
+
 pub struct Display<'a, C: pixelcolor::PixelColor> {
     dsi: dsi::Dsi<'a>,
     ltdc: ltdc::Ltdc,
     framebuffer: Framebuffer<'a, <C::Raw as pixelcolor::raw::ToBytes>::Bytes>,
+    layers: [LayerState; 2],
 }
 
 impl<'a, C> Display<'a, C>
@@ -89,6 +102,7 @@ where
             dsi,
             ltdc,
             framebuffer,
+            layers: array::from_fn(|_| Default::default()),
         }
     }
 
@@ -105,9 +119,24 @@ where
         cfg: &ltdc::LayerConfig,
     ) {
         self.ltdc.config_layer(layer, framebuffer, cfg);
+        self.layers[layer as usize].init = true;
     }
 
     pub fn enable_layer(&mut self, layer: embassy_stm32::ltdc::LtdcLayer, enable: bool) {
+        assert!(self.layers[layer as usize].init);
+        self.layers[layer as usize].enable = enable;
         self.ltdc.enable_layer(layer, enable);
+    }
+
+    pub async fn enable(&mut self, enable: bool) {
+        otm8009a::enable(&mut self.dsi, enable).await;
+    }
+
+    pub async fn sleep(&mut self, sleep: bool) {
+        otm8009a::sleep(&mut self.dsi, sleep).await;
+    }
+
+    pub async fn set_brightness(&mut self, brightness: u8) {
+        otm8009a::set_brightness(&mut self.dsi, brightness).await;
     }
 }
