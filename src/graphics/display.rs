@@ -1,12 +1,10 @@
 #![allow(dead_code)]
 
 use core::array;
-use core::mem::MaybeUninit;
 
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::Output;
 use embassy_stm32::time::Hertz;
-use embedded_graphics::pixelcolor;
 
 mod dsi;
 mod ltdc;
@@ -21,8 +19,6 @@ pub use otm8009a::HEIGHT;
 pub use otm8009a::Orientation;
 pub use otm8009a::WIDTH;
 
-use super::framebuffer::Framebuffer;
-
 #[derive(Debug)]
 #[derive(Clone, Copy)]
 #[derive(PartialEq, Eq)]
@@ -33,22 +29,17 @@ struct LayerState {
     enable: bool,
 }
 
-pub struct Display<'a, C: pixelcolor::PixelColor> {
+pub struct Display<'a> {
     dsi: dsi::Dsi<'a>,
     ltdc: ltdc::Ltdc,
-    framebuffer: Framebuffer<'a, <C::Raw as pixelcolor::raw::ToBytes>::Bytes>,
     layers: [LayerState; 2],
 }
 
-impl<'a, C> Display<'a, C>
-where
-    C: pixelcolor::PixelColor,
-{
+impl<'a> Display<'a> {
     #[allow(clippy::too_many_arguments)]
     pub async fn init(
         dsi: dsi::Peripheral,
         ltdc: ltdc::Peripheral,
-        buf: &'a mut [MaybeUninit<u8>],
         config: &otm8009a::Config,
         hse: Hertz,
         ltdc_clock: Hertz,
@@ -56,11 +47,6 @@ where
         te_pin: impl embassy_stm32::dsihost::TePin<dsi::Peripheral>,
         _button: &mut ExtiInput<'_>,
     ) -> Self {
-        let framebuffer = super::framebuffer::Framebuffer::new(
-            buf,
-            config.rows.get() as usize,
-            config.cols.get() as usize,
-        );
         let lane_byte_clock = Hertz::khz(62_500);
 
         let video_cfg = dsi::video_mode::Config {
@@ -101,15 +87,8 @@ where
         Self {
             dsi,
             ltdc,
-            framebuffer,
             layers: array::from_fn(|_| Default::default()),
         }
-    }
-
-    pub fn framebuffer(
-        &mut self,
-    ) -> Framebuffer<'_, <C::Raw as pixelcolor::raw::ToBytes>::Bytes> {
-        self.framebuffer.reborrow()
     }
 
     pub fn init_layer(

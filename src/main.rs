@@ -148,10 +148,15 @@ async fn _main(spawner: Spawner) -> ! {
         rows: NonZeroU16::new(display::HEIGHT).expect("height must be nonzero"),
         cols: NonZeroU16::new(display::WIDTH).expect("width must be nonzero"),
     };
-    let mut disp = display::Display::<Argb8888>::init(
+
+    let mut framebuffer = graphics::framebuffer::Framebuffer::<[u8; 4]>::new(
+        buf,
+        display::WIDTH as usize,
+        display::HEIGHT as usize,
+    );
+    let mut disp = display::Display::init(
         p.DSIHOST,
         p.LTDC,
-        buf,
         &display_config,
         hse,
         ltdc_clock,
@@ -160,7 +165,7 @@ async fn _main(spawner: Spawner) -> ! {
         &mut _button,
     )
     .await;
-    let framebuffer_ptr = disp.framebuffer().as_ptr().as_ptr().cast_const().cast();
+    let framebuffer_ptr = framebuffer.as_ptr().as_ptr().cast_const().cast();
     let layer_1 = embassy_stm32::ltdc::LtdcLayer::Layer1;
     disp.init_layer(
         layer_1,
@@ -176,7 +181,6 @@ async fn _main(spawner: Spawner) -> ! {
         },
     );
     disp.enable_layer(layer_1, true);
-    let mut framebuffer = disp.framebuffer();
     let bounds = framebuffer.bounding_box();
     Ok(()) = framebuffer
         .fill_solid(&framebuffer.bounding_box(), Argb8888::from_u32(0xFF7F0057));
@@ -194,12 +198,9 @@ async fn _main(spawner: Spawner) -> ! {
     Timer::after_secs(1).await;
     disp.sleep(false).await;
     Timer::after_secs(1).await;
-    disp.set_brightness(0xFF).await;
-    Timer::after_secs(1).await;
     disp.set_brightness(0x00).await;
     Timer::after_secs(1).await;
-    disp.set_brightness(0x7F).await;
-    let mut framebuffer = disp.framebuffer();
+    disp.set_brightness(0xFF).await;
     Ok(()) = framebuffer.fill_solid(
         &bounds.resized(bounds.size / 2, AnchorPoint::Center),
         Argb8888::from_u32(0xFF660033),
