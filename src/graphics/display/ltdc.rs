@@ -121,10 +121,10 @@ impl Ltdc {
         framebuffer: *const (),
         cfg: &LayerConfig,
     ) {
-        let h_win_start = cfg.x_offset + LTDC.bpcr().read().ahbp();
-        let h_win_stop = h_win_start + cfg.width;
-        let v_win_start = cfg.y_offset + LTDC.bpcr().read().avbp();
-        let v_win_stop = v_win_start + cfg.height;
+        let h_win_start = cfg.x_offset + LTDC.bpcr().read().ahbp() + 1;
+        let h_win_stop = h_win_start + cfg.width - 1;
+        let v_win_start = cfg.y_offset + LTDC.bpcr().read().avbp() + 1;
+        let v_win_stop = v_win_start + cfg.height - 1;
 
         {
             let layer = LTDC.layer(layer as usize);
@@ -172,7 +172,7 @@ impl Ltdc {
             let pixel_size = cfg.pixel_format.bytes_per_pixel() as u16;
             layer.cfblr().write(|w| {
                 w.set_cfbll(cfg.width * pixel_size + 3);
-                w.set_cfbp(cfg.width * pixel_size);
+                w.set_cfbp((cfg.width) * pixel_size);
             });
 
             // frame buffer line count
