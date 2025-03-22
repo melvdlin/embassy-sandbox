@@ -1,6 +1,4 @@
-#![allow(dead_code)]
-
-use core::array;
+use core::marker::PhantomData;
 
 use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::Output;
@@ -10,7 +8,6 @@ mod dsi;
 mod ltdc;
 mod otm8009a;
 pub use dsi::InterruptHandler as DSIInterruptHandler;
-pub use ltdc::Layer;
 pub use ltdc::LayerConfig;
 pub use otm8009a::ColorMap;
 pub use otm8009a::Config;
@@ -19,34 +16,61 @@ pub use otm8009a::HEIGHT;
 pub use otm8009a::Orientation;
 pub use otm8009a::WIDTH;
 
-#[derive(Debug)]
-#[derive(Clone, Copy)]
-#[derive(PartialEq, Eq)]
-#[derive(Hash)]
-#[derive(Default)]
-struct LayerState {
-    init: bool,
-    enable: bool,
-}
+use crate::util::typelevel::MapOnce;
 
 pub struct Display<'a> {
     dsi: dsi::Dsi<'a>,
     ltdc: ltdc::Ltdc,
-    layers: [LayerState; 2],
+}
+
+#[derive(Debug)]
+#[derive(Clone, Copy)]
+#[derive(PartialEq, Eq)]
+pub struct Layer1<'disp>(PhantomData<&'disp ltdc::Ltdc>);
+
+#[derive(Debug)]
+#[derive(Clone, Copy)]
+#[derive(PartialEq, Eq)]
+pub struct Layer2<'disp>(PhantomData<&'disp ltdc::Ltdc>);
+
+#[derive(Debug)]
+#[derive(Clone, Copy)]
+#[derive(PartialEq, Eq)]
+pub struct DynLayer<'a>(ltdc::Layer, PhantomData<&'a ltdc::Ltdc>);
+
+pub trait Layer: Copy {
+    fn as_index(&self) -> ltdc::Layer;
+}
+
+pub trait ConstLayer: Copy {
+    const INDEX: ltdc::Layer;
+
+    fn erase<'a>(self) -> DynLayer<'a>
+    where
+        Self: 'a,
+    {
+        DynLayer(Self::INDEX, PhantomData)
+    }
 }
 
 impl<'a> Display<'a> {
     #[allow(clippy::too_many_arguments)]
-    pub async fn init(
+    pub async fn init<'l1, 'l2, L1, L2>(
         dsi: dsi::Peripheral,
         ltdc: ltdc::Peripheral,
         config: &otm8009a::Config,
+        layer_1_config: L1,
+        layer_2_config: L2,
         hse: Hertz,
         ltdc_clock: Hertz,
         mut reset_pin: Output<'a>,
         te_pin: impl embassy_stm32::dsihost::TePin<dsi::Peripheral>,
         _button: &mut ExtiInput<'_>,
-    ) -> Self {
+    ) -> (Self, L1::Output<Layer1<'a>>, L2::Output<Layer2<'a>>)
+    where
+        L1: MapOnce<&'l1 ltdc::LayerConfig>,
+        L2: MapOnce<&'l2 ltdc::LayerConfig>,
+    {
         let lane_byte_clock = Hertz::khz(62_500);
 
         let video_cfg = dsi::video_mode::Config {
@@ -78,33 +102,28 @@ impl<'a> Display<'a> {
         let mut dsi = dsi::Dsi::init(dsi, te_pin);
         dsi.clock_setup(hse, Hertz::khz(62_500), false, 2).await;
         dsi.video_mode_setup(&video_cfg, lane_byte_clock, ltdc_clock).await;
-        let ltdc = ltdc::Ltdc::init(ltdc, background, &video_cfg.ltdc);
+        let mut ltdc = ltdc::Ltdc::init(ltdc, background, &video_cfg.ltdc);
         dsi.enable();
 
         otm8009a::init(&mut dsi, config).await;
 
+        let layer_1 = layer_1_config.map_once(|cfg| {
+            let layer = Layer1(PhantomData);
+            ltdc.config_layer(layer.as_index(), cfg);
+            layer
+        });
+        let layer_2 = layer_2_config.map_once(|cfg| {
+            let layer = Layer2(PhantomData);
+            ltdc.config_layer(layer.as_index(), cfg);
+            layer
+        });
+
         #[allow(unreachable_code)]
-        Self {
-            dsi,
-            ltdc,
-            layers: array::from_fn(|_| Default::default()),
-        }
+        (Self { dsi, ltdc }, layer_1, layer_2)
     }
 
-    pub fn init_layer(
-        &mut self,
-        layer: embassy_stm32::ltdc::LtdcLayer,
-        framebuffer: *const (),
-        cfg: &ltdc::LayerConfig,
-    ) {
-        self.ltdc.config_layer(layer, framebuffer, cfg);
-        self.layers[layer as usize].init = true;
-    }
-
-    pub fn enable_layer(&mut self, layer: embassy_stm32::ltdc::LtdcLayer, enable: bool) {
-        assert!(self.layers[layer as usize].init);
-        self.layers[layer as usize].enable = enable;
-        self.ltdc.enable_layer(layer, enable);
+    pub fn enable_layer(&mut self, layer: impl Layer, enable: bool) {
+        self.ltdc.enable_layer(layer.as_index(), enable);
     }
 
     pub async fn enable(&mut self, enable: bool) {
@@ -117,5 +136,28 @@ impl<'a> Display<'a> {
 
     pub async fn set_brightness(&mut self, brightness: u8) {
         otm8009a::set_brightness(&mut self.dsi, brightness).await;
+    }
+}
+
+impl ConstLayer for Layer1<'_> {
+    const INDEX: ltdc::Layer = ltdc::Layer::Layer1;
+}
+
+impl ConstLayer for Layer2<'_> {
+    const INDEX: ltdc::Layer = ltdc::Layer::Layer2;
+}
+
+impl<T> Layer for T
+where
+    T: ConstLayer,
+{
+    fn as_index(&self) -> ltdc::Layer {
+        T::INDEX
+    }
+}
+
+impl Layer for DynLayer<'_> {
+    fn as_index(&self) -> ltdc::Layer {
+        self.0
     }
 }

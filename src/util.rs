@@ -1,3 +1,5 @@
+pub mod typelevel;
+
 pub trait ByteSliceExt {
     fn trim_ascii_start_mut(&mut self) -> &mut Self;
     fn trim_ascii_end_mut(&mut self) -> &mut Self;

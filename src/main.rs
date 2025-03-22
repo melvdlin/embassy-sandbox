@@ -21,6 +21,7 @@ use embassy_net::Ipv4Address;
 use embassy_sandbox::graphics::color::Argb8888;
 use embassy_sandbox::graphics::display;
 use embassy_sandbox::graphics::display::LayerConfig;
+use embassy_sandbox::util::typelevel;
 use embassy_sandbox::*;
 use embassy_stm32::bind_interrupts;
 #[allow(unused_imports)]
@@ -151,13 +152,26 @@ async fn _main(spawner: Spawner) -> ! {
 
     let mut framebuffer = graphics::framebuffer::Framebuffer::<[u8; 4]>::new(
         buf,
-        display::WIDTH as usize,
         display::HEIGHT as usize,
+        display::WIDTH as usize,
     );
-    let mut disp = display::Display::init(
+    let framebuffer_ptr = framebuffer.as_ptr().as_ptr().cast_const().cast();
+    let layer_cfg = LayerConfig {
+        framebuffer: framebuffer_ptr,
+        x_offset: 0,
+        y_offset: 0,
+        width: display_config.cols.get(),
+        height: display_config.rows.get(),
+        pixel_format: embassy_stm32::ltdc::PixelFormat::ARGB8888,
+        alpha: 0xFF,
+        default_color: Argb8888::from_u32(0x00000000),
+    };
+    let (mut disp, typelevel::Some(layer_1), typelevel::None) = display::Display::init(
         p.DSIHOST,
         p.LTDC,
         &display_config,
+        typelevel::Some(&layer_cfg),
+        typelevel::None,
         hse,
         ltdc_clock,
         lcd_reset_pin,
@@ -165,21 +179,6 @@ async fn _main(spawner: Spawner) -> ! {
         &mut _button,
     )
     .await;
-    let framebuffer_ptr = framebuffer.as_ptr().as_ptr().cast_const().cast();
-    let layer_1 = embassy_stm32::ltdc::LtdcLayer::Layer1;
-    disp.init_layer(
-        layer_1,
-        framebuffer_ptr,
-        &LayerConfig {
-            x_offset: 0,
-            y_offset: 0,
-            width: display_config.cols.get(),
-            height: display_config.rows.get(),
-            pixel_format: embassy_stm32::ltdc::PixelFormat::ARGB8888,
-            alpha: 0xFF,
-            default_color: Argb8888::from_u32(0x00000000),
-        },
-    );
     disp.enable_layer(layer_1, true);
     let bounds = framebuffer.bounding_box();
     Ok(()) = framebuffer

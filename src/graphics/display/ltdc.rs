@@ -20,6 +20,7 @@ pub struct Ltdc {
 }
 
 pub struct LayerConfig {
+    pub framebuffer: *const (),
     pub x_offset: u16,
     pub y_offset: u16,
     pub width: u16,
@@ -27,15 +28,6 @@ pub struct LayerConfig {
     pub pixel_format: embassy_stm32::ltdc::PixelFormat,
     pub alpha: u8,
     pub default_color: Argb8888,
-}
-
-pub fn layer(layer: usize) -> Layer {
-    assert!(layer < 2);
-    match layer {
-        | 0 => Layer::Layer1,
-        | 1 => Layer::Layer2,
-        | _ => unreachable!(),
-    }
 }
 
 impl Ltdc {
@@ -115,12 +107,7 @@ impl Ltdc {
         ltdc
     }
 
-    pub fn config_layer(
-        &mut self,
-        layer: Layer,
-        framebuffer: *const (),
-        cfg: &LayerConfig,
-    ) {
+    pub fn config_layer(&mut self, layer: Layer, cfg: &LayerConfig) {
         let h_win_start = cfg.x_offset + LTDC.bpcr().read().ahbp() + 1;
         let h_win_stop = h_win_start + cfg.width - 1;
         let v_win_start = cfg.y_offset + LTDC.bpcr().read().avbp() + 1;
@@ -166,7 +153,7 @@ impl Ltdc {
             });
 
             // framebuffer start address
-            layer.cfbar().write(|w| w.set_cfbadd(framebuffer as u32));
+            layer.cfbar().write(|w| w.set_cfbadd(cfg.framebuffer as u32));
 
             // frame buffer line length and pitch (offset between start of subsequent lines)
             let pixel_size = cfg.pixel_format.bytes_per_pixel() as u16;
