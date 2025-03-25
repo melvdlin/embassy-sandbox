@@ -140,7 +140,15 @@ macro_rules! impl_from_rgb {
     ($type:ty, $from:ty) => {
         impl From<$from> for $type {
             fn from(rgb: $from) -> Self {
-                Self::new(u8::MAX, rgb.r(), rgb.g(), rgb.b())
+                let red_shift = <$from>::MAX_R.leading_zeros();
+                let green_shift = <$from>::MAX_G.leading_zeros();
+                let blue_shift = <$from>::MAX_B.leading_zeros();
+                Self::new(
+                    u8::MAX,
+                    rgb.r() << red_shift,
+                    rgb.g() << green_shift,
+                    rgb.b() << blue_shift,
+                )
             }
         }
     };

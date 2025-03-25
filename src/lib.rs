@@ -12,6 +12,7 @@
 #![feature(iter_array_chunks)]
 #![feature(array_chunks)]
 #![feature(breakpoint)]
+#![feature(pointer_is_aligned_to)]
 
 #[cfg(any())]
 pub mod bitbang;

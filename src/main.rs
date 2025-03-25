@@ -57,6 +57,7 @@ bind_interrupts!(struct Irqs {
     ETH => net::EthIrHandler;
     RNG => net::RngIrHandler;
     DSI => display::DSIInterruptHandler;
+    DMA2D => display::Dma2dInterruptHandler;
 });
 
 #[embassy_executor::main]
@@ -140,6 +141,8 @@ async fn _main(spawner: Spawner) -> ! {
         DHCP_UP.dyn_receiver().expect("not enough watch receivers available"),
     );
 
+    let mut dma2d = display::dma2d::Dma2d::init(p.DMA2D, Irqs);
+
     const PIXELS: usize = display::WIDTH as usize * display::HEIGHT as usize;
     let buf: &'static mut [MaybeUninit<u8>] = &mut memory[..PIXELS * 4];
     let display_config = display::Config {
@@ -155,7 +158,7 @@ async fn _main(spawner: Spawner) -> ! {
         display::HEIGHT as usize,
         display::WIDTH as usize,
     );
-    let framebuffer_ptr = framebuffer.as_ptr().as_ptr().cast_const().cast();
+    let framebuffer_ptr = framebuffer.reborrow().as_ptr().as_ptr().cast_const().cast();
     let layer_cfg = LayerConfig {
         framebuffer: framebuffer_ptr,
         x_offset: 0,
@@ -200,10 +203,30 @@ async fn _main(spawner: Spawner) -> ! {
     disp.set_brightness(0x00).await;
     Timer::after_secs(1).await;
     disp.set_brightness(0xFF).await;
-    Ok(()) = framebuffer.fill_solid(
-        &bounds.resized(bounds.size / 2, AnchorPoint::Center),
-        Argb8888::from_u32(0xFF660033),
+
+    let rows = framebuffer.nrows();
+    let cols = framebuffer.ncols();
+    let fill_cfg = display::dma2d::OutputConfig::argb(
+        cols as u16 / 2,
+        rows as u16 / 2,
+        cols as u16 / 2,
     );
+    dma2d
+        .fill(
+            &mut framebuffer.reborrow().as_mut()[(cols * rows / 4 + cols / 4) * 4..],
+            &fill_cfg,
+            Argb8888::from_u32(0xFF660033),
+        )
+        .await;
+
+    // TODO:
+    // - Write DrawTarget Wrapper using DMA2D
+    // - Test copying functionality
+
+    // Ok(()) = framebuffer.fill_solid(
+    //     &bounds.resized(bounds.size / 2, AnchorPoint::Center),
+    //     Argb8888::from_u32(0xFF660033),
+    // );
     join(blink, net).await.0
 }
 

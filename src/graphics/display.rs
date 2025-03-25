@@ -4,9 +4,11 @@ use embassy_stm32::exti::ExtiInput;
 use embassy_stm32::gpio::Output;
 use embassy_stm32::time::Hertz;
 
+pub mod dma2d;
 mod dsi;
 mod ltdc;
 mod otm8009a;
+pub use dma2d::InterruptHandler as Dma2dInterruptHandler;
 pub use dsi::InterruptHandler as DSIInterruptHandler;
 pub use ltdc::LayerConfig;
 pub use otm8009a::ColorMap;
@@ -118,7 +120,6 @@ impl<'a> Display<'a> {
             layer
         });
 
-        #[allow(unreachable_code)]
         (Self { dsi, ltdc }, layer_1, layer_2)
     }
 

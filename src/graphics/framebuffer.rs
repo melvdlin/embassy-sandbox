@@ -236,8 +236,15 @@ impl<'buf, P> Framebuffer<'buf, P> {
     }
 
     /// Returns a write-valid pointer to the backing memory.
-    pub const fn as_ptr(&self) -> NonNull<[u8]> {
+    ///
+    /// Valid for as long as `self`.
+    pub const fn as_ptr(self) -> NonNull<[u8]> {
         self.buf.as_ptr()
+    }
+
+    /// Get a mutable reference the backing memory
+    pub const fn as_mut(self) -> &'buf mut [MaybeUninit<u8>] {
+        self.buf.as_mut()
     }
 }
 
@@ -606,8 +613,20 @@ impl<'buf, P> Row<'buf, P> {
     }
 
     /// Returns a write-valid pointer to the backing memory.
-    pub const fn as_ptr(&self) -> NonNull<[u8]> {
+    ///
+    /// Valid for as long as `self`.
+    pub const fn as_ptr(self) -> NonNull<[u8]> {
         self.buf
+    }
+
+    /// Get a mutable reference the backing memory
+    pub const fn as_mut(self) -> &'buf mut [MaybeUninit<u8>] {
+        unsafe {
+            slice::from_raw_parts_mut(
+                self.buf.as_ptr().as_mut_ptr().cast(),
+                self.buf.len(),
+            )
+        }
     }
 }
 
