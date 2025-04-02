@@ -271,14 +271,11 @@ impl<P> Default for Framebuffer<'_, P> {
     }
 }
 
-impl<P> Dimensions for Framebuffer<'_, P> {
-    fn bounding_box(&self) -> Rectangle {
-        Rectangle {
-            top_left: Point::zero(),
-            size: Size {
-                width: u32::try_from(self.cols).unwrap_or(u32::MAX),
-                height: u32::try_from(self.rows).unwrap_or(u32::MAX),
-            },
+impl<P> OriginDimensions for Framebuffer<'_, P> {
+    fn size(&self) -> Size {
+        Size {
+            width: u32::try_from(self.cols).unwrap_or(u32::MAX),
+            height: u32::try_from(self.rows).unwrap_or(u32::MAX),
         }
     }
 }
@@ -683,18 +680,12 @@ impl<P> Default for Row<'_, P> {
     }
 }
 
-impl<P> Dimensions for Row<'_, P> {
-    fn bounding_box(&self) -> embedded_graphics::primitives::Rectangle {
-        use embedded_graphics::prelude::*;
-        use embedded_graphics::primitives::*;
-
-        Rectangle {
-            top_left: Point::zero(),
-            size: Size {
-                width: u32::try_from(self.len())
-                    .expect("framebuffer width out of bounds for u32"),
-                height: 1,
-            },
+impl<P> OriginDimensions for Row<'_, P> {
+    fn size(&self) -> Size {
+        Size {
+            width: u32::try_from(self.len())
+                .expect("framebuffer width out of bounds for u32"),
+            height: 1,
         }
     }
 }
