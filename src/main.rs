@@ -8,7 +8,6 @@
 
 #[allow(unused_imports)]
 use core::arch::breakpoint;
-use core::mem::MaybeUninit;
 use core::num::NonZeroU16;
 use core::panic::PanicInfo;
 use core::sync::atomic;
@@ -21,6 +20,8 @@ use embassy_net::Ipv4Address;
 use embassy_sandbox::graphics::color::Argb8888;
 use embassy_sandbox::graphics::display;
 use embassy_sandbox::graphics::display::LayerConfig;
+use embassy_sandbox::graphics::display::dma2d;
+use embassy_sandbox::util::mem::FlushGuard;
 use embassy_sandbox::util::typelevel;
 use embassy_sandbox::*;
 use embassy_stm32::bind_interrupts;
@@ -34,9 +35,6 @@ use embassy_sync::watch;
 use embassy_sync::watch::Watch;
 use embassy_time::Duration;
 use embassy_time::Timer;
-use embedded_graphics::geometry::AnchorPoint;
-use embedded_graphics::prelude::Dimensions;
-use embedded_graphics::prelude::DrawTarget;
 use rand_core::RngCore;
 
 #[inline(never)]
@@ -74,14 +72,13 @@ async fn _main(spawner: Spawner) -> ! {
 
     // 128 Mib
     const SDRAM_SIZE: usize = (128 / 8) << 20;
-    let memory: &'static mut [MaybeUninit<u8>] =
+    let memory: &'static mut [u32] =
         unsafe { sdram::init::<SDRAM_SIZE>(sdram::create_sdram!(p)) };
     let (head, _tail) = memory.split_at_mut(4);
-    let values: &[u8] = &[0x12, 0x21, 0xEF, 0xFE];
+    let values: &[u32] = &[0x12, 0x21, 0xEF, 0xFE];
     for (src, dst) in values.iter().zip(head.iter_mut()) {
-        dst.write(*src);
+        *dst = *src;
     }
-    let head = unsafe { core::mem::transmute::<&mut [MaybeUninit<u8>], &mut [u8]>(head) };
 
     assert_eq!(head, values);
 
@@ -144,7 +141,8 @@ async fn _main(spawner: Spawner) -> ! {
     let mut dma2d = display::dma2d::Dma2d::init(p.DMA2D, Irqs);
 
     const PIXELS: usize = display::WIDTH as usize * display::HEIGHT as usize;
-    let buf: &'static mut [MaybeUninit<u8>] = &mut memory[..PIXELS * 4];
+    let buf: &'static mut [u32] = &mut memory[..PIXELS];
+    let buf: &'static mut [Argb8888] = bytemuck::must_cast_slice_mut(buf);
     let display_config = display::Config {
         framerate: display::FrameRateHz::_65,
         orientation: display::Orientation::Landscape,
@@ -153,12 +151,8 @@ async fn _main(spawner: Spawner) -> ! {
         cols: NonZeroU16::new(display::WIDTH).expect("width must be nonzero"),
     };
 
-    let mut framebuffer = graphics::framebuffer::Framebuffer::<[u8; 4]>::new(
-        buf,
-        display::HEIGHT as usize,
-        display::WIDTH as usize,
-    );
-    let framebuffer_ptr = framebuffer.reborrow().as_ptr().as_ptr().cast_const().cast();
+    let framebuffer = buf;
+    let framebuffer_ptr = framebuffer as *mut _ as *const _;
     let layer_cfg = LayerConfig {
         framebuffer: framebuffer_ptr,
         x_offset: 0,
@@ -183,9 +177,10 @@ async fn _main(spawner: Spawner) -> ! {
     )
     .await;
     disp.enable_layer(layer_1, true);
-    let bounds = framebuffer.bounding_box();
-    Ok(()) = framebuffer
-        .fill_solid(&framebuffer.bounding_box(), Argb8888::from_u32(0xFF7F0057));
+
+    {
+        FlushGuard(framebuffer).fill(Argb8888::from_u32(0xFF7F0057));
+    }
 
     Timer::after_secs(1).await;
     disp.enable_layer(layer_1, false);
@@ -204,16 +199,18 @@ async fn _main(spawner: Spawner) -> ! {
     Timer::after_secs(1).await;
     disp.set_brightness(0xFF).await;
 
-    let rows = framebuffer.nrows();
-    let cols = framebuffer.ncols();
-    let fill_cfg = display::dma2d::OutputConfig::argb(
+    let rows = display::HEIGHT as usize;
+    let cols = display::WIDTH as usize;
+    let fill_cfg = display::dma2d::OutputConfig::new(
         cols as u16 / 2,
         rows as u16 / 2,
         cols as u16 / 2,
     );
     dma2d
-        .fill(
-            &mut framebuffer.reborrow().as_mut()[(cols * rows / 4 + cols / 4) * 4..],
+        .fill::<dma2d::format::typelevel::Argb8888>(
+            bytemuck::must_cast_slice_mut(
+                &mut framebuffer[(cols * rows / 4 + cols / 4)..],
+            ),
             &fill_cfg,
             Argb8888::from_u32(0xFF660033),
         )

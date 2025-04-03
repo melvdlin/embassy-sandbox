@@ -1,3 +1,4 @@
+pub mod mem;
 pub mod typelevel;
 
 pub trait ByteSliceExt {

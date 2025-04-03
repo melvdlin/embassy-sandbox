@@ -131,12 +131,7 @@ impl Ltdc {
 
             // default color
             layer.dccr().write(|w| {
-                let Argb8888 {
-                    alpha,
-                    red,
-                    green,
-                    blue,
-                } = cfg.default_color;
+                let [alpha, red, green, blue] = cfg.default_color.argb();
                 w.set_dcalpha(alpha);
                 w.set_dcred(red);
                 w.set_dcgreen(green);
