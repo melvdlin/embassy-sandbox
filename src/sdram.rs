@@ -1,5 +1,3 @@
-use core::mem::MaybeUninit;
-
 use embassy_time::Delay;
 use static_cell::StaticCell;
 

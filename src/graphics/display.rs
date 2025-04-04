@@ -6,7 +6,6 @@ use embassy_stm32::time::Hertz;
 
 pub mod dma2d;
 mod dsi;
-pub mod image;
 mod ltdc;
 mod otm8009a;
 pub use dma2d::InterruptHandler as Dma2dInterruptHandler;

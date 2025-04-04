@@ -22,13 +22,23 @@ use super::display::dma2d::format::typelevel as format;
 compile_error!("targets with pointer width other than 32 not supported");
 
 pub struct Framebuffer<'a, B> {
-    framebuffer: B,
+    buf: B,
     width: u16,
     height: u16,
     dma: &'a mut super::display::dma2d::Dma2d,
 }
 
 impl<B> Framebuffer<'_, B> {
+    /// Get the number of pixels in this framebuffer.
+    pub fn len(&self) -> usize {
+        self.width as usize * self.height as usize
+    }
+
+    /// Returns `true` iff `self.len() == 0`.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     #[inline]
     fn index(&self, x: usize, y: usize) -> usize {
         y * self.width as usize + x
@@ -64,10 +74,26 @@ impl<B> Framebuffer<'_, B> {
     }
 }
 
-impl<B> Framebuffer<'_, B>
+impl<'a, B> Framebuffer<'a, B>
 where
     B: AsMut<[Argb8888]>,
 {
+    /// Create a new framebuffer with a DMA accelerator.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `width * height != buf.as_mut().len()`.
+    pub fn new(buf: B, width: u16, height: u16, dma: &'a mut dma2d::Dma2d) -> Self {
+        let mut buf = buf;
+        assert_eq!(width as usize * height as usize, buf.as_mut().len());
+        Self {
+            buf,
+            width,
+            height,
+            dma,
+        }
+    }
+
     /// Get an iterator over the framebuffer's rows, subsliced to a specified range.
     ///
     /// # Panics
@@ -80,28 +106,40 @@ where
         active_range: impl RangeBounds<usize>,
     ) -> Rows<'_> {
         assert!(first_row < self.height as usize);
-        let rows = &mut self.framebuffer.as_mut()[first_row * self.width as usize..];
+        let rows = &mut self.buf.as_mut()[first_row * self.width as usize..];
         let cols = slice::range(active_range, ..self.width as usize);
         Rows::new(rows, self.width as usize, cols)
     }
 
+    /// Draws a rectangle in the speicifed color.
     pub async fn fill_rect(&mut self, area: &Rectangle, color: Argb8888) {
         let (out_cfg, range) = self.output_cfg(area);
-        let buf = bytemuck::must_cast_slice_mut(&mut self.framebuffer.as_mut()[range]);
+        let buf = bytemuck::must_cast_slice_mut(&mut self.buf.as_mut()[range]);
         self.dma.fill::<format::Argb8888>(buf, &out_cfg, color).await
     }
 
+    /// Copy the source image into this framebuffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `source.len() != self.len()`
     pub async fn copy<Format>(&mut self, area: &Rectangle, source: &[Format::Repr])
     where
         Format: format::Format,
     {
         let (out_cfg, range) = self.output_cfg(area);
-        let buf = bytemuck::must_cast_slice_mut(&mut self.framebuffer.as_mut()[range]);
+        let buf = bytemuck::must_cast_slice_mut(&mut self.buf.as_mut()[range]);
         let fg = InputConfig::<Format>::copy(source, 0);
 
         self.dma.transfer_memory::<format::Argb8888, Format>(buf, &out_cfg, &fg).await
     }
 
+    /// Copy the source grayscale image blended with a color
+    /// into this framebuffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `source.len() != self.len()`
     pub async fn copy_with_color<Format>(
         &mut self,
         area: &Rectangle,
@@ -111,7 +149,7 @@ where
         Format: format::Grayscale,
     {
         let (out_cfg, range) = self.output_cfg(area);
-        let buf = bytemuck::must_cast_slice_mut(&mut self.framebuffer.as_mut()[range]);
+        let buf = bytemuck::must_cast_slice_mut(&mut self.buf.as_mut()[range]);
         let fg = InputConfig::<Format>::copy(source, 0).blend_color(color);
 
         self.dma.transfer_memory::<format::Argb8888, Format>(buf, &out_cfg, &fg).await
@@ -143,7 +181,7 @@ where
             pixels.into_iter().filter(|Pixel(point, _)| bounds.contains(*point))
         {
             let index = self.index(x as usize, y as usize);
-            self.framebuffer.as_mut()[index] = color;
+            self.buf.as_mut()[index] = color;
         }
 
         Ok(())
@@ -186,7 +224,7 @@ where
         let width = area.size.width as u16;
         let height = area.size.height as u16;
         self.dma.fill_blocking::<format::Argb8888>(
-            bytemuck::must_cast_slice_mut(&mut self.framebuffer.as_mut()[range]),
+            bytemuck::must_cast_slice_mut(&mut self.buf.as_mut()[range]),
             &OutputConfig::new(width, height, offset),
             color,
         );

@@ -1,5 +1,7 @@
 use core::future::poll_fn;
 use core::mem;
+use core::sync::atomic::Ordering;
+use core::sync::atomic::fence;
 use core::task::Poll;
 
 use embassy_stm32::interrupt::typelevel as interrupt;
@@ -304,9 +306,6 @@ pub mod format {
     }
 }
 
-#[repr(transparent)]
-struct Foo([u32; 0]);
-
 #[derive(Debug)]
 #[derive(Clone, Copy)]
 #[derive(PartialEq, Eq)]
@@ -416,7 +415,10 @@ impl Dma2d {
         BF: Format,
     {
         self.transfer_memory_cfg::<OF, _, _>(dst, out_cfg, foreground, background);
-        self.run().await
+
+        fence(Ordering::SeqCst);
+        self.run().await;
+        fence(Ordering::SeqCst);
     }
 
     pub fn transfer_merge_blocking<OF, FF, BF>(
@@ -431,7 +433,10 @@ impl Dma2d {
         BF: Format,
     {
         self.transfer_memory_cfg::<OF, _, _>(dst, out_cfg, foreground, background);
-        self.run_blocking()
+
+        fence(Ordering::SeqCst);
+        self.run_blocking();
+        fence(Ordering::SeqCst);
     }
 
     pub async fn transfer_memory<OF, FF>(
@@ -458,9 +463,11 @@ impl Dma2d {
         OF: Rgb,
         FF: Format,
     {
+        fence(Ordering::SeqCst);
         self.transfer_merge_blocking::<OF, _, format::typelevel::Argb8888>(
             dst, out_cfg, foreground, None,
         );
+        fence(Ordering::SeqCst);
     }
 
     fn transfer_memory_cfg<OF, FF, BF>(
@@ -812,7 +819,7 @@ where
     }
 }
 
-impl<'a, F> InputConfig<'a, F>
+impl<F> InputConfig<'_, F>
 where
     F: Grayscale,
 {

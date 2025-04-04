@@ -216,14 +216,6 @@ async fn _main(spawner: Spawner) -> ! {
         )
         .await;
 
-    // TODO:
-    // - Write DrawTarget Wrapper using DMA2D
-    // - Test copying functionality
-
-    // Ok(()) = framebuffer.fill_solid(
-    //     &bounds.resized(bounds.size / 2, AnchorPoint::Center),
-    //     Argb8888::from_u32(0xFF660033),
-    // );
     join(blink, net).await.0
 }
 
