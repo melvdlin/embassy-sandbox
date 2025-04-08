@@ -17,6 +17,7 @@ use super::display::dma2d;
 use super::display::dma2d::InputConfig;
 use super::display::dma2d::OutputConfig;
 use super::display::dma2d::format::typelevel as format;
+use super::gui::Accelerated;
 
 #[cfg(not(target_pointer_width = "32"))]
 compile_error!("targets with pointer width other than 32 not supported");
@@ -117,13 +118,18 @@ where
         let buf = bytemuck::must_cast_slice_mut(&mut self.buf.as_mut()[range]);
         self.dma.fill::<format::Argb8888>(buf, &out_cfg, color).await
     }
+}
 
+impl<B> Accelerated for Framebuffer<'_, B>
+where
+    B: AsMut<[Argb8888]>,
+{
     /// Copy the source image into this framebuffer.
     ///
     /// # Panics
     ///
     /// Panics if `source.len() != self.len()`
-    pub async fn copy<Format>(&mut self, area: &Rectangle, source: &[Format::Repr])
+    async fn copy<Format>(&mut self, area: &Rectangle, source: &[Format::Repr])
     where
         Format: format::Format,
     {
@@ -140,7 +146,7 @@ where
     /// # Panics
     ///
     /// Panics if `source.len() != self.len()`
-    pub async fn copy_with_color<Format>(
+    async fn copy_with_color<Format>(
         &mut self,
         area: &Rectangle,
         source: &[Format::Repr],
