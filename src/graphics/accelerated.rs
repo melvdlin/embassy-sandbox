@@ -111,13 +111,6 @@ where
         let cols = slice::range(active_range, ..self.width as usize);
         Rows::new(rows, self.width as usize, cols)
     }
-
-    /// Draws a rectangle in the speicifed color.
-    pub async fn fill_rect(&mut self, area: &Rectangle, color: Argb8888) {
-        let (out_cfg, range) = self.output_cfg(area);
-        let buf = bytemuck::must_cast_slice_mut(&mut self.buf.as_mut()[range]);
-        self.dma.fill::<format::Argb8888>(buf, &out_cfg, color).await
-    }
 }
 
 impl<B> Accelerated for Framebuffer<'_, B>
@@ -159,6 +152,13 @@ where
         let fg = InputConfig::<Format>::copy(source, 0).blend_color(color);
 
         self.dma.transfer_memory::<format::Argb8888, Format>(buf, &out_cfg, &fg).await
+    }
+
+    /// Draw a rectangle in the speicifed color.
+    async fn fill_rect(&mut self, area: &Rectangle, color: Argb8888) {
+        let (out_cfg, range) = self.output_cfg(area);
+        let buf = bytemuck::must_cast_slice_mut(&mut self.buf.as_mut()[range]);
+        self.dma.fill::<format::Argb8888>(buf, &out_cfg, color).await
     }
 }
 
