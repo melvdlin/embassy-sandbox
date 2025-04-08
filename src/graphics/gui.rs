@@ -19,6 +19,9 @@ type Repr<Format> = <Format as format::Format>::Repr;
 
 #[allow(async_fn_in_trait)]
 pub trait Accelerated: DrawTarget {
+    /// Draw a rectangle in the speicifed color.
+    async fn fill_rect(&mut self, area: &Rectangle, color: Argb8888);
+
     /// Copy the source image into this framebuffer.
     ///
     /// # Panics

@@ -81,6 +81,10 @@ impl<A> Accelerated for Translated<'_, A>
 where
     A: Accelerated,
 {
+    async fn fill_rect(&mut self, area: &Rectangle, color: Argb8888) {
+        self.surface.fill_rect(area.translate(self.offset), color).await
+    }
+
     async fn copy<Format>(&mut self, area: &Rectangle, source: &[Format::Repr])
     where
         Format: format::Format,
