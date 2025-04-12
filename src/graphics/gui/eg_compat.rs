@@ -1,8 +1,5 @@
-use embedded_graphics::draw_target::Translated;
 use embedded_graphics::prelude::Dimensions;
-use embedded_graphics::prelude::DrawTarget;
 use embedded_graphics::prelude::Drawable as EgDrawable;
-use embedded_graphics::prelude::Transform;
 use embedded_graphics::primitives::Arc;
 use embedded_graphics::primitives::Circle;
 use embedded_graphics::primitives::Ellipse;
