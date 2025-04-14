@@ -1,3 +1,5 @@
+pub mod font;
+
 use core::ops::Range;
 
 use ascii::AsciiChar;
