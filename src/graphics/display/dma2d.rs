@@ -688,6 +688,7 @@ impl Dma2d {
             if !mem::replace(&mut polled, true) {
                 cortex_m::interrupt::free(|_cs| {
                     WAKER.register(cx.waker());
+                    Interrupts::clear_pending();
                     Interrupts::enable_vector();
 
                     DMA2D.cr().modify(|w| w.set_start(vals::CrStart::START));
@@ -737,9 +738,14 @@ impl Interrupts {
     #[inline]
     pub fn enable(self) {
         DMA2D.cr().modify(|w| {
-            w.0 &= Self::all().bits() << 8;
+            w.0 &= !Self::all().bits() << 8;
             w.0 |= self.bits() << 8;
         });
+    }
+
+    #[inline]
+    pub fn clear_pending() {
+        interrupt::DMA2D::unpend();
     }
 
     #[inline]

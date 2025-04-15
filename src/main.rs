@@ -21,11 +21,12 @@ use embassy_sandbox::graphics::accelerated::Framebuffer;
 use embassy_sandbox::graphics::color::Argb8888;
 use embassy_sandbox::graphics::display;
 use embassy_sandbox::graphics::display::LayerConfig;
-use embassy_sandbox::graphics::display::dma2d;
+use embassy_sandbox::graphics::gui::Accelerated;
+use embassy_sandbox::graphics::gui::Drawable;
+use embassy_sandbox::graphics::gui::ext::AcceleratedExt;
 use embassy_sandbox::graphics::gui::text::font;
 use embassy_sandbox::graphics::gui::text::textbox;
 use embassy_sandbox::graphics::gui::text::textbox::TextBox;
-use embassy_sandbox::util::mem::FlushGuard;
 use embassy_sandbox::util::typelevel;
 use embassy_sandbox::*;
 use embassy_stm32::bind_interrupts;
@@ -39,6 +40,8 @@ use embassy_sync::watch;
 use embassy_sync::watch::Watch;
 use embassy_time::Duration;
 use embassy_time::Timer;
+use embedded_graphics::geometry::AnchorPoint;
+use embedded_graphics::prelude::Dimensions;
 use embedded_graphics::prelude::Point;
 use rand_core::RngCore;
 
@@ -181,42 +184,39 @@ async fn _main(spawner: Spawner) -> ! {
         &mut _button,
     )
     .await;
-    disp.enable_layer(layer_1, true);
-
-    {
-        FlushGuard(framebuffer).fill(Argb8888::from_u32(0xFF7F0057));
-    }
-
-    Timer::after_secs(1).await;
-    disp.enable_layer(layer_1, false);
-    Timer::after_secs(1).await;
-    disp.enable_layer(layer_1, true);
-    Timer::after_secs(1).await;
-    disp.enable(false).await;
-    Timer::after_secs(1).await;
-    disp.enable(true).await;
-    Timer::after_secs(1).await;
-    disp.sleep(true).await;
-    Timer::after_secs(1).await;
-    disp.sleep(false).await;
-    Timer::after_secs(1).await;
-    disp.set_brightness(0x00).await;
-    Timer::after_secs(1).await;
-    disp.set_brightness(0xFF).await;
 
     let rows = display::HEIGHT as usize;
     let cols = display::WIDTH as usize;
-    let fill_cfg = display::dma2d::OutputConfig::new(
-        cols as u16 / 2,
-        rows as u16 / 2,
-        cols as u16 / 2,
-    );
-    dma2d
-        .fill::<dma2d::format::typelevel::Argb8888>(
-            bytemuck::must_cast_slice_mut(
-                &mut framebuffer[(cols * rows / 4 + cols / 4)..],
-            ),
-            &fill_cfg,
+    let mut accelerated =
+        Framebuffer::new(framebuffer, cols as u16, rows as u16, &mut dma2d);
+    let bounds = accelerated.bounding_box();
+
+    disp.enable_layer(layer_1, true);
+
+    accelerated.fill_rect(&bounds, Argb8888(0xFF7F0057)).await;
+
+    if false {
+        Timer::after_secs(1).await;
+        disp.enable_layer(layer_1, false);
+        Timer::after_secs(1).await;
+        disp.enable_layer(layer_1, true);
+        Timer::after_secs(1).await;
+        disp.enable(false).await;
+        Timer::after_secs(1).await;
+        disp.enable(true).await;
+        Timer::after_secs(1).await;
+        disp.sleep(true).await;
+        Timer::after_secs(1).await;
+        disp.sleep(false).await;
+        Timer::after_secs(1).await;
+        disp.set_brightness(0x00).await;
+        Timer::after_secs(1).await;
+        disp.set_brightness(0xFF).await;
+    }
+
+    accelerated
+        .fill_rect(
+            &bounds.resized(bounds.size / 2, AnchorPoint::Center),
             Argb8888::from_u32(0xFF660033),
         )
         .await;
@@ -236,10 +236,6 @@ async fn _main(spawner: Spawner) -> ! {
         layer: 1,
         line_break_aware: true,
     };
-    use embassy_sandbox::graphics::gui::Drawable;
-    use embassy_sandbox::graphics::gui::ext::AcceleratedExt;
-    let mut accelerated =
-        Framebuffer::new(framebuffer, cols as u16, rows as u16, &mut dma2d);
     let mut translated = accelerated.translated(Point {
         x: cols as i32 / 4,
         y: rows as i32 / 4,
