@@ -246,6 +246,7 @@ async fn _main(spawner: Spawner) -> ! {
     text.content.clear();
     text.content.push_str("lorem ipsum dolor sit amet").unwrap();
 
+    Timer::after_secs(1).await;
     text.draw(&mut translated, 1).await;
 
     join(blink, net).await.0

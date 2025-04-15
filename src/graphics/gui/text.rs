@@ -115,7 +115,9 @@ where
         }
         let idx = (char.as_byte() - self.range.start) as usize;
         let size = self.width as usize * self.height as usize;
-        Some(&self.chars[idx..idx + size])
+        let start = idx * size;
+        let end = (idx + 1) * size;
+        Some(&self.chars[start..end])
     }
 
     fn fallback(&self) -> &[Repr<Self::Format>] {
