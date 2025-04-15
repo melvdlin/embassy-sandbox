@@ -97,11 +97,15 @@ where
         self.surface.fill_rect(&area.translate(self.offset), color).await
     }
 
-    async fn copy<Format>(&mut self, area: &Rectangle, source: &[Format::Repr])
-    where
+    async fn copy<Format>(
+        &mut self,
+        area: &Rectangle,
+        source: &[Format::Repr],
+        blend: bool,
+    ) where
         Format: format::Format,
     {
-        self.surface.copy::<Format>(&area.translate(self.offset), source).await
+        self.surface.copy::<Format>(&area.translate(self.offset), source, blend).await
     }
 
     async fn copy_with_color<Format>(
@@ -109,11 +113,12 @@ where
         area: &Rectangle,
         source: &[Format::Repr],
         color: Argb8888,
+        blend: bool,
     ) where
         Format: format::Grayscale,
     {
         self.surface
-            .copy_with_color::<Format>(&area.translate(self.offset), source, color)
+            .copy_with_color::<Format>(&area.translate(self.offset), source, color, blend)
             .await
     }
 }

@@ -23,17 +23,23 @@ pub trait Accelerated: DrawTarget<Color = Argb8888, Error = Infallible> {
     /// Draw a rectangle in the speicifed color.
     async fn fill_rect(&mut self, area: &Rectangle, color: Argb8888);
 
-    /// Copy the source image into this framebuffer.
+    /// Copy the source image into this framebuffer,
+    /// optionally blending it with the current framebuffer content.
     ///
     /// # Panics
     ///
     /// Panics if `source.len() != self.len()`
-    async fn copy<Format>(&mut self, area: &Rectangle, source: &[Format::Repr])
-    where
+    async fn copy<Format>(
+        &mut self,
+        area: &Rectangle,
+        source: &[Format::Repr],
+        blend: bool,
+    ) where
         Format: format::Format;
 
     /// Copy the source grayscale image blended with a color
-    /// into this framebuffer.
+    /// into this framebuffer,
+    /// optionally blending it with the current framebuffer content.
     ///
     /// # Panics
     ///
@@ -43,6 +49,7 @@ pub trait Accelerated: DrawTarget<Color = Argb8888, Error = Infallible> {
         area: &Rectangle,
         source: &[Format::Repr],
         color: Argb8888,
+        blend: bool,
     ) where
         Format: format::Grayscale;
 }

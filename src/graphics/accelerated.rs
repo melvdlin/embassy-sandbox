@@ -61,7 +61,7 @@ impl<B> Framebuffer<'_, B> {
         let area = self.clamp_area(area);
         let start = self.index(area.top_left.x as usize, area.top_left.y as usize);
         let end = if let Some(bottom_right) = area.bottom_right() {
-            self.index(bottom_right.x as usize, bottom_right.y as usize)
+            self.index(bottom_right.x as usize, bottom_right.y as usize) + 1
         } else {
             start
         };
@@ -158,15 +158,25 @@ where
     /// # Panics
     ///
     /// Panics if `source.len() != self.len()`
-    async fn copy<Format>(&mut self, area: &Rectangle, source: &[Format::Repr])
-    where
+    async fn copy<Format>(
+        &mut self,
+        area: &Rectangle,
+        source: &[Format::Repr],
+        blend: bool,
+    ) where
         Format: format::Format,
     {
         let (out_cfg, range) = self.output_cfg(area);
         let buf = bytemuck::must_cast_slice_mut(&mut self.buf.as_mut()[range]);
         let fg = InputConfig::<Format>::copy(source, 0);
 
-        self.dma.transfer_memory::<format::Argb8888, Format>(buf, &out_cfg, &fg).await
+        if blend {
+            self.dma
+                .transfer_onto::<format::Argb8888, Format>(buf, &out_cfg, &fg, None)
+                .await
+        } else {
+            self.dma.transfer_memory::<format::Argb8888, Format>(buf, &out_cfg, &fg).await
+        }
     }
 
     /// Copy the source grayscale image blended with a color
@@ -180,6 +190,7 @@ where
         area: &Rectangle,
         source: &[Format::Repr],
         color: Argb8888,
+        blend: bool,
     ) where
         Format: format::Grayscale,
     {
@@ -187,7 +198,13 @@ where
         let buf = bytemuck::must_cast_slice_mut(&mut self.buf.as_mut()[range]);
         let fg = InputConfig::<Format>::copy(source, 0).blend_color(color);
 
-        self.dma.transfer_memory::<format::Argb8888, Format>(buf, &out_cfg, &fg).await
+        if blend {
+            self.dma
+                .transfer_onto::<format::Argb8888, Format>(buf, &out_cfg, &fg, None)
+                .await
+        } else {
+            self.dma.transfer_memory::<format::Argb8888, Format>(buf, &out_cfg, &fg).await
+        }
     }
 
     /// Draw a rectangle in the speicifed color.

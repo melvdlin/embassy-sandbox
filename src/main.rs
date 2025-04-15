@@ -43,6 +43,7 @@ use embassy_time::Timer;
 use embedded_graphics::geometry::AnchorPoint;
 use embedded_graphics::prelude::Dimensions;
 use embedded_graphics::prelude::Point;
+use embedded_graphics::primitives::Rectangle;
 use rand_core::RngCore;
 
 #[inline(never)]
@@ -256,6 +257,12 @@ async fn _main(spawner: Spawner) -> ! {
     text.content.push_str("lorem ipsum dolor sit amet").unwrap();
 
     Timer::after_secs(1).await;
+    translated
+        .fill_rect(
+            &Rectangle::new(Point::zero(), bounds.size / 2),
+            Argb8888::from_u32(0xFF660033),
+        )
+        .await;
     text.draw(&mut translated, 1).await;
 
     join(blink, net).await.0

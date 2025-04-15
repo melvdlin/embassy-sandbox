@@ -454,7 +454,7 @@ impl Dma2d {
         .await;
     }
 
-    pub async fn transfer_memory_blocking<OF, FF>(
+    pub fn transfer_memory_blocking<OF, FF>(
         &mut self,
         dst: &mut [OF::Repr],
         out_cfg: &OutputConfig,
@@ -494,6 +494,63 @@ impl Dma2d {
                 vals::Mode::MEMORY_TO_MEMORY_PFCBLENDING
             })
         });
+    }
+
+    pub async fn transfer_onto<OF, IF>(
+        &mut self,
+        dst: &mut [OF::Repr],
+        out_cfg: &OutputConfig,
+        foreground: &InputConfig<'_, IF>,
+        background: Option<AlphaConfig>,
+    ) where
+        OF: Rgb,
+        IF: Format,
+    {
+        self.transfer_onto_cfg::<OF, IF>(dst, out_cfg, foreground, background);
+
+        fence(Ordering::SeqCst);
+        self.run().await;
+        fence(Ordering::SeqCst);
+    }
+
+    pub fn transfer_onto_blocking<OF, IF>(
+        &mut self,
+        dst: &mut [OF::Repr],
+        out_cfg: &OutputConfig,
+        foreground: &InputConfig<'_, IF>,
+        background: Option<AlphaConfig>,
+    ) where
+        OF: Rgb,
+        IF: Format,
+    {
+        self.transfer_onto_cfg::<OF, IF>(dst, out_cfg, foreground, background);
+
+        fence(Ordering::SeqCst);
+        self.run_blocking();
+        fence(Ordering::SeqCst);
+    }
+
+    fn transfer_onto_cfg<OF, IF>(
+        &mut self,
+        dst: &mut [OF::Repr],
+        out_cfg: &OutputConfig,
+        foreground: &InputConfig<IF>,
+        background: Option<AlphaConfig>,
+    ) where
+        OF: Rgb,
+        IF: Format,
+    {
+        self.output_cfg::<OF>(dst, out_cfg);
+        self.input_cfg(foreground, out_cfg, false);
+        let bg_cfg = InputConfig::<OF> {
+            source: dst,
+            offset: out_cfg.offset,
+            alpha: background,
+            color: None,
+        };
+        self.input_cfg(&bg_cfg, out_cfg, true);
+
+        DMA2D.cr().modify(|w| w.set_mode(vals::Mode::MEMORY_TO_MEMORY_PFCBLENDING));
     }
 
     pub async fn fill<Format>(
@@ -577,12 +634,12 @@ impl Dma2d {
     ) where
         Format: format::typelevel::Format,
     {
-        assert_eq!(
-            in_cfg.source.len(),
-            out_cfg.width as usize * out_cfg.height as usize
-        );
-        assert!(in_cfg.offset.is_multiple_of(Format::FORMAT.len_alignment() as u16));
-        assert!(out_cfg.width.is_multiple_of(Format::FORMAT.len_alignment() as u16));
+        let offset = in_cfg.offset as usize;
+        let width = out_cfg.width as usize;
+        let height = out_cfg.height as usize;
+        assert_eq!(in_cfg.source.len(), width * height + offset * (height - 1));
+        assert!(offset.is_multiple_of(Format::FORMAT.len_alignment()));
+        assert!(width.is_multiple_of(Format::FORMAT.len_alignment()));
 
         if background {
             DMA2D.bgpfccr().write(|w| {
@@ -659,7 +716,7 @@ impl Dma2d {
         let width = cfg.width as usize;
         let height = cfg.height as usize;
         let offset = cfg.offset as usize;
-        let total_size = width + offset * (height - 1) + width;
+        let total_size = (width + offset) * (height - 1) + width;
         assert!(total_size <= dst.len());
 
         DMA2D.opfccr().write(|w| {

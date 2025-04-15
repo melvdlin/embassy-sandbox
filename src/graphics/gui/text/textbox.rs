@@ -251,6 +251,7 @@ where
                     &Rectangle::new(position, char_map.char_size()),
                     char,
                     self.color,
+                    true,
                 )
                 .await
         }
