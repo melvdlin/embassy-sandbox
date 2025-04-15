@@ -19,6 +19,9 @@ pub struct Ltdc {
     _peripheral: Peripheral,
 }
 
+#[derive(Debug)]
+#[derive(Clone, Copy)]
+#[derive(PartialEq, Eq)]
 pub struct LayerConfig {
     pub framebuffer: *const (),
     pub x_offset: u16,

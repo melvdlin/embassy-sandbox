@@ -17,7 +17,7 @@ use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::join::join3;
 use embassy_net::Ipv4Address;
-use embassy_sandbox::graphics::accelerated::Framebuffer;
+use embassy_sandbox::graphics::accelerated::Backing;
 use embassy_sandbox::graphics::color::Argb8888;
 use embassy_sandbox::graphics::display;
 use embassy_sandbox::graphics::display::LayerConfig;
@@ -149,8 +149,10 @@ async fn _main(spawner: Spawner) -> ! {
     let mut dma2d = display::dma2d::Dma2d::init(p.DMA2D, Irqs);
 
     const PIXELS: usize = display::WIDTH as usize * display::HEIGHT as usize;
-    let buf: &'static mut [u32] = &mut memory[..PIXELS];
-    let buf: &'static mut [Argb8888] = bytemuck::must_cast_slice_mut(buf);
+    let (layer0, tail) = memory.split_at_mut(PIXELS);
+    let (layer1, _tail) = tail.split_at_mut(PIXELS);
+    let layer0: &'static mut [Argb8888] = bytemuck::must_cast_slice_mut(layer0);
+    let layer1: &'static mut [Argb8888] = bytemuck::must_cast_slice_mut(layer1);
     let display_config = display::Config {
         framerate: display::FrameRateHz::_65,
         orientation: display::Orientation::Landscape,
@@ -159,10 +161,10 @@ async fn _main(spawner: Spawner) -> ! {
         cols: NonZeroU16::new(display::WIDTH).expect("width must be nonzero"),
     };
 
-    let framebuffer = buf;
-    let framebuffer_ptr = framebuffer as *mut _ as *const _;
-    let layer_cfg = LayerConfig {
-        framebuffer: framebuffer_ptr,
+    let mut buf = [layer0, layer1];
+    let buf_ptr = buf.each_mut().map(|buf| *buf as *mut _ as *const _);
+    let layer0_cfg = LayerConfig {
+        framebuffer: buf_ptr[0],
         x_offset: 0,
         y_offset: 0,
         width: display_config.cols.get(),
@@ -171,35 +173,43 @@ async fn _main(spawner: Spawner) -> ! {
         alpha: 0xFF,
         default_color: Argb8888::from_u32(0x00000000),
     };
-    let (mut disp, typelevel::Some(layer_1), typelevel::None) = display::Display::init(
-        p.DSIHOST,
-        p.LTDC,
-        &display_config,
-        typelevel::Some(&layer_cfg),
-        typelevel::None,
-        hse,
-        ltdc_clock,
-        lcd_reset_pin,
-        p.PJ2,
-        &mut _button,
-    )
-    .await;
+    let layer_cfg = [
+        layer0_cfg,
+        LayerConfig {
+            framebuffer: buf_ptr[1],
+            ..layer0_cfg
+        },
+    ];
+    let (mut disp, typelevel::Some(layer_0), typelevel::Some(_layer_1)) =
+        display::Display::init(
+            p.DSIHOST,
+            p.LTDC,
+            &display_config,
+            typelevel::Some(&layer_cfg[0]),
+            typelevel::Some(&layer_cfg[1]),
+            hse,
+            ltdc_clock,
+            lcd_reset_pin,
+            p.PJ2,
+            &mut _button,
+        )
+        .await;
 
     let rows = display::HEIGHT as usize;
     let cols = display::WIDTH as usize;
-    let mut accelerated =
-        Framebuffer::new(framebuffer, cols as u16, rows as u16, &mut dma2d);
-    let bounds = accelerated.bounding_box();
+    let mut backing = buf.map(|buf| Backing::new(buf, cols as u16, rows as u16));
+    let bounds = backing[0].bounding_box();
+    let mut buf = backing[0].with_dma(&mut dma2d);
 
-    disp.enable_layer(layer_1, true);
+    disp.enable_layer(layer_0, true);
 
-    accelerated.fill_rect(&bounds, Argb8888(0xFF7F0057)).await;
+    buf.fill_rect(&bounds, Argb8888(0xFF7F0057)).await;
 
     if false {
         Timer::after_secs(1).await;
-        disp.enable_layer(layer_1, false);
+        disp.enable_layer(layer_0, false);
         Timer::after_secs(1).await;
-        disp.enable_layer(layer_1, true);
+        disp.enable_layer(layer_0, true);
         Timer::after_secs(1).await;
         disp.enable(false).await;
         Timer::after_secs(1).await;
@@ -214,12 +224,11 @@ async fn _main(spawner: Spawner) -> ! {
         disp.set_brightness(0xFF).await;
     }
 
-    accelerated
-        .fill_rect(
-            &bounds.resized(bounds.size / 2, AnchorPoint::Center),
-            Argb8888::from_u32(0xFF660033),
-        )
-        .await;
+    buf.fill_rect(
+        &bounds.resized(bounds.size / 2, AnchorPoint::Center),
+        Argb8888::from_u32(0xFF660033),
+    )
+    .await;
 
     Timer::after_secs(1).await;
 
@@ -236,7 +245,7 @@ async fn _main(spawner: Spawner) -> ! {
         layer: 1,
         line_break_aware: true,
     };
-    let mut translated = accelerated.translated(Point {
+    let mut translated = buf.translated(Point {
         x: cols as i32 / 4,
         y: rows as i32 / 4,
     });
@@ -335,6 +344,7 @@ fn config() -> (embassy_stm32::Config, Hertz, Hertz, Hertz) {
     use embassy_stm32::rcc::*;
     let mut config = embassy_stm32::Config::default();
     let hse_freq = Hertz::mhz(25);
+    let ltdc_clock_mul = 280; // original: 384
     config.rcc = {
         // config is non-exhaustive
         let mut rcc = Config::default();
@@ -358,13 +368,13 @@ fn config() -> (embassy_stm32::Config, Hertz, Hertz, Hertz) {
             // PLL in == 25 MHz / 25 == 1 MHz
             prediv: PllPreDiv::DIV25,
             // PLL out == 1 MHz * 384 == 384 MHz
-            mul: PllMul(384),
+            mul: PllMul(ltdc_clock_mul),
             divp: None,
             divq: None,
             // LTDC clock == PLLSAIR / 2
             //            == PLL out / divr / 2
-            //            == 384 MHz / 7 / 2
-            //            == 27 MHz
+            //            == 280 MHz / 7 / 2
+            //            == 20 MHz
             divr: Some(PllRDiv::DIV7),
         });
         rcc.pll_src = PllSource::HSE;
@@ -379,7 +389,7 @@ fn config() -> (embassy_stm32::Config, Hertz, Hertz, Hertz) {
         config,
         Hertz::mhz(216),
         hse_freq,
-        Hertz(384 * 1_000_000 / 7 / 2),
+        Hertz(ltdc_clock_mul as u32 * 1_000_000 / 7 / 2),
     )
 }
 

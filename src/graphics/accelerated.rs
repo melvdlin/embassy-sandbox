@@ -29,6 +29,17 @@ pub struct Framebuffer<'a, B> {
     dma: &'a mut super::display::dma2d::Dma2d,
 }
 
+/// A backing buffer that can be upgraded to a [`Framebuffer`]
+/// by providing a DMA accelerator.
+#[derive(Debug)]
+#[derive(Clone, Copy)]
+#[derive(PartialEq, Eq)]
+pub struct Backing<B> {
+    buf: B,
+    width: u16,
+    height: u16,
+}
+
 impl<B> Framebuffer<'_, B> {
     /// Get the number of pixels in this framebuffer.
     pub fn len(&self) -> usize {
@@ -72,6 +83,31 @@ impl<B> Framebuffer<'_, B> {
             Point::zero(),
             Size::new(self.width.into(), self.height.into()),
         ))
+    }
+}
+
+impl<B> Backing<B>
+where
+    B: AsMut<[Argb8888]>,
+{
+    /// Create a new backing buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `width * height != buf.as_mut().len()`.
+    pub fn new(buf: B, width: u16, height: u16) -> Self {
+        let mut buf = buf;
+        assert_eq!(width as usize * height as usize, buf.as_mut().len());
+        Self { buf, width, height }
+    }
+
+    /// Create a new framebuffer borrowing `self` as backing buffer
+    /// and using the provided DMA accelerator.
+    pub fn with_dma<'buf, 'dma>(
+        &'buf mut self,
+        dma: &'dma mut dma2d::Dma2d,
+    ) -> Framebuffer<'dma, &'buf mut B> {
+        Framebuffer::new(&mut self.buf, self.width, self.height, dma)
     }
 }
 
@@ -163,6 +199,15 @@ where
 }
 
 impl<B> OriginDimensions for Framebuffer<'_, B> {
+    fn size(&self) -> Size {
+        Size {
+            width: self.width.into(),
+            height: self.height.into(),
+        }
+    }
+}
+
+impl<B> OriginDimensions for Backing<B> {
     fn size(&self) -> Size {
         Size {
             width: self.width.into(),
