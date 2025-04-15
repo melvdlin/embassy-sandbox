@@ -17,10 +17,14 @@ use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::join::join3;
 use embassy_net::Ipv4Address;
+use embassy_sandbox::graphics::accelerated::Framebuffer;
 use embassy_sandbox::graphics::color::Argb8888;
 use embassy_sandbox::graphics::display;
 use embassy_sandbox::graphics::display::LayerConfig;
 use embassy_sandbox::graphics::display::dma2d;
+use embassy_sandbox::graphics::gui::text::font;
+use embassy_sandbox::graphics::gui::text::textbox;
+use embassy_sandbox::graphics::gui::text::textbox::TextBox;
 use embassy_sandbox::util::mem::FlushGuard;
 use embassy_sandbox::util::typelevel;
 use embassy_sandbox::*;
@@ -35,6 +39,7 @@ use embassy_sync::watch;
 use embassy_sync::watch::Watch;
 use embassy_time::Duration;
 use embassy_time::Timer;
+use embedded_graphics::prelude::Point;
 use rand_core::RngCore;
 
 #[inline(never)]
@@ -215,6 +220,37 @@ async fn _main(spawner: Spawner) -> ! {
             Argb8888::from_u32(0xFF660033),
         )
         .await;
+
+    Timer::after_secs(1).await;
+
+    let mut s = heapless::String::<64>::new();
+    s.push_str("Hello, world!").unwrap();
+    let mut text = TextBox {
+        content: s,
+        color: Argb8888(0xff326ba6),
+        layout: textbox::Layout {
+            char_map: &font::FIRA_MONO_40,
+            cols: 16,
+            rows: 3,
+        },
+        layer: 1,
+        line_break_aware: true,
+    };
+    use embassy_sandbox::graphics::gui::Drawable;
+    use embassy_sandbox::graphics::gui::ext::AcceleratedExt;
+    let mut accelerated =
+        Framebuffer::new(framebuffer, cols as u16, rows as u16, &mut dma2d);
+    let mut translated = accelerated.translated(Point {
+        x: cols as i32 / 4,
+        y: rows as i32 / 4,
+    });
+
+    text.draw(&mut translated, 1).await;
+
+    text.content.clear();
+    text.content.push_str("lorem ipsum dolor sit amet").unwrap();
+
+    text.draw(&mut translated, 1).await;
 
     join(blink, net).await.0
 }

@@ -9,6 +9,18 @@ pub trait AcceleratedExt {
     fn translated(&mut self, offset: Point) -> Translated<'_, Self>;
 }
 
+impl<A> AcceleratedExt for A
+where
+    A: Accelerated,
+{
+    fn translated(&mut self, offset: Point) -> Translated<'_, Self> {
+        Translated {
+            offset,
+            surface: self,
+        }
+    }
+}
+
 pub struct Translated<'a, A: ?Sized> {
     pub offset: Point,
     pub surface: &'a mut A,

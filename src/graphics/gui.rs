@@ -4,13 +4,14 @@ pub mod ext;
 pub mod boxes;
 pub mod text;
 
+use core::convert::Infallible;
+
 pub use dma2d::format::typelevel as format;
 use embedded_graphics::prelude::Dimensions;
 use embedded_graphics::prelude::DrawTarget;
 use embedded_graphics::prelude::Point;
 use embedded_graphics::primitives::Rectangle;
 
-use super::accelerated;
 use super::color::Argb8888;
 use super::display::dma2d;
 
@@ -18,7 +19,7 @@ type Repr<Format> = <Format as format::Format>::Repr;
 
 /// A trait for hardware accelerated draw targets.
 #[allow(async_fn_in_trait)]
-pub trait Accelerated: DrawTarget {
+pub trait Accelerated: DrawTarget<Color = Argb8888, Error = Infallible> {
     /// Draw a rectangle in the speicifed color.
     async fn fill_rect(&mut self, area: &Rectangle, color: Argb8888);
 
@@ -50,11 +51,7 @@ pub trait Accelerated: DrawTarget {
 #[allow(async_fn_in_trait)]
 pub trait Drawable: embedded_graphics::prelude::Dimensions {
     /// Draw `self` onto the active framebuffer layer.
-    async fn draw(
-        &self,
-        framebuffer: &mut accelerated::Framebuffer<'_, &mut [Argb8888]>,
-        layer: usize,
-    );
+    async fn draw(&self, framebuffer: &mut impl Accelerated, layer: usize);
 }
 
 /// Horizontal alignment

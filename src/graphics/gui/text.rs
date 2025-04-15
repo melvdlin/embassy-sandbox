@@ -1,4 +1,5 @@
 pub mod font;
+pub mod textbox;
 
 use core::ops::Range;
 
@@ -13,18 +14,37 @@ pub trait AsciiMap {
     /// The pixel format.
     type Format: format::Format;
     /// The pixel dimensions of a single char.
-    fn char_dimensions(&self) -> Size;
+    fn char_size(&self) -> Size;
     /// Get the image of a character, if the character is supported.
     ///
     /// This image must have the dimensions specified in [`AsciiMap::char_dimensions`].
-    fn char(&self, c: AsciiChar) -> Option<&[Repr<Self::Format>]>;
+    fn char(&self, char: AsciiChar) -> Option<&[Repr<Self::Format>]>;
     /// Get the fallback character image.
     ///
     /// This image must have the dimensions specified by [`AsciiMap::char_dimensions`].
     fn fallback(&self) -> &[Repr<Self::Format>];
 }
 
-pub struct PrintableAsciiMap<'a, F>
+impl<T> AsciiMap for &T
+where
+    T: AsciiMap,
+{
+    type Format = T::Format;
+
+    fn char_size(&self) -> Size {
+        (*self).char_size()
+    }
+
+    fn char(&self, char: AsciiChar) -> Option<&[Repr<Self::Format>]> {
+        (*self).char(char)
+    }
+
+    fn fallback(&self) -> &[Repr<Self::Format>] {
+        (*self).fallback()
+    }
+}
+
+pub struct AsciiRangeMap<'a, F>
 where
     F: format::Format,
 {
@@ -35,7 +55,7 @@ where
     fallback: &'a [Repr<F>],
 }
 
-impl<'a, F> PrintableAsciiMap<'a, F>
+impl<'a, F> AsciiRangeMap<'a, F>
 where
     F: format::Format,
 {
@@ -76,13 +96,13 @@ where
     }
 }
 
-impl<F> AsciiMap for PrintableAsciiMap<'_, F>
+impl<F> AsciiMap for AsciiRangeMap<'_, F>
 where
     F: format::Format,
 {
     type Format = F;
 
-    fn char_dimensions(&self) -> Size {
+    fn char_size(&self) -> Size {
         Size {
             width: self.width.into(),
             height: self.height.into(),

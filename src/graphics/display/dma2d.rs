@@ -699,7 +699,6 @@ impl Dma2d {
             }
         })
         .await;
-        Interrupts::disable_vector();
 
         let flags = Interrupts::read();
         flags.clear();
@@ -761,6 +760,7 @@ pub struct InterruptHandler {}
 
 impl interrupt::Handler<interrupt::DMA2D> for InterruptHandler {
     unsafe fn on_interrupt() {
+        Interrupts::disable_vector();
         WAKER.wake();
     }
 }
