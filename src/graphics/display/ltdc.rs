@@ -3,7 +3,6 @@ use core::mem;
 use core::sync::atomic::Ordering;
 use core::task::Poll;
 
-use embassy_stm32::interrupt::InterruptExt;
 use embassy_stm32::interrupt::typelevel as interrupt;
 use embassy_stm32::interrupt::typelevel::Interrupt;
 pub use embassy_stm32::ltdc::LtdcLayer as Layer;
@@ -231,6 +230,7 @@ impl Ltdc {
     }
 }
 
+#[allow(dead_code)]
 impl Interrupts {
     #[inline]
     pub fn read() -> Self {

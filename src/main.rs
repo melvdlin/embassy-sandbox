@@ -193,26 +193,19 @@ async fn _main(spawner: Spawner) -> ! {
     let rows = display::HEIGHT as usize;
     let cols = display::WIDTH as usize;
 
-    let mut buffer =
-        DoubleBuffer::new(cols as u16, rows as u16, front, back, dma2d, layer0);
-    let mut back = buffer.back();
-    let bounds = back.bounding_box();
+    let mut buf = DoubleBuffer::new(cols as u16, rows as u16, front, back, dma2d, layer0);
+    let bounds = buf.bounding_box();
 
     disp.enable_layer(layer0, true);
 
-    back.fill_rect(&bounds, Argb8888(0xFF7F0057)).await;
-    back.fill_rect(
+    buf.fill_rect(&bounds, Argb8888(0xFF7F0057)).await;
+    buf.fill_rect(
         &bounds.resized(bounds.size / 2, AnchorPoint::Center),
         Argb8888(0xFF660033),
     )
     .await;
-    let (mut back, front) = buffer.swap_front(&mut disp).await;
-    back.copy::<display::dma2d::format::typelevel::Argb8888>(
-        &bounds,
-        bytemuck::must_cast_slice(front),
-        false,
-    )
-    .await;
+    buf.swap(&mut disp).await;
+    buf.copy_from_front().await;
 
     if false {
         Timer::after_secs(1).await;
@@ -255,13 +248,13 @@ async fn _main(spawner: Spawner) -> ! {
         y: rows as i32 / 4,
     };
 
-    let mut translated = back.translated(offset);
+    let mut translated = buf.translated(offset);
 
     text.content.push_str("Hello, world!").unwrap();
     translated.fill_rect(&text_bounds, Argb8888(0xFF440022)).await;
     text.draw(&mut translated, 0).await;
 
-    let mut buf = buffer.swap(&mut disp).await;
+    buf.swap(&mut disp).await;
 
     text.content.clear();
     text.content.push_str("Lorem ipsum dolo").unwrap();
@@ -275,7 +268,7 @@ async fn _main(spawner: Spawner) -> ! {
         Timer::after_secs(1).await;
         buf.translated(offset).fill_rect(&text_bounds, Argb8888(0xFF440022)).await;
         text.draw(&mut buf.translated(offset), 0).await;
-        buf = buffer.swap(&mut disp).await;
+        buf.swap(&mut disp).await;
     }
 
     join(blink, net).await.0

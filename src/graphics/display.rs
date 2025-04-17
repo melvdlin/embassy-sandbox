@@ -13,6 +13,10 @@ mod ltdc;
 mod otm8009a;
 pub use dma2d::InterruptHandler as Dma2dInterruptHandler;
 pub use dsi::InterruptHandler as DsiInterruptHandler;
+use embedded_graphics::prelude::Dimensions;
+use embedded_graphics::prelude::DrawTarget;
+use embedded_graphics::prelude::OriginDimensions;
+use embedded_graphics::prelude::Size;
 pub use ltdc::ErrorInterruptHandler as LtdcErrorInterruptHandler;
 pub use ltdc::InterruptHandler as LtdcInterruptHandler;
 pub use ltdc::LayerConfig;
@@ -23,9 +27,9 @@ pub use otm8009a::HEIGHT;
 pub use otm8009a::Orientation;
 pub use otm8009a::WIDTH;
 
-use super::accelerated::Backing;
 use super::accelerated::Framebuffer;
 use super::color::Argb8888;
+use super::gui::Accelerated;
 use crate::util::typelevel::MapOnce;
 
 pub struct Display<'a> {
@@ -178,11 +182,8 @@ impl Layer for DynLayer<'_> {
 }
 
 pub struct DoubleBuffer<B, D, L> {
-    width: u16,
-    height: u16,
     front: B,
-    back: B,
-    dma: D,
+    back: Framebuffer<B, D>,
     layer: L,
 }
 
@@ -204,15 +205,11 @@ where
         dma: D,
         layer: L,
     ) -> Self {
-        assert_eq!(front.as_mut().len(), width as usize * height as usize);
-        assert_eq!(back.as_mut().len(), width as usize * height as usize);
+        assert_eq!(front.as_mut().len(), back.as_mut().len());
 
         Self {
-            width,
-            height,
             front,
-            back,
-            dma,
+            back: Framebuffer::new(back, width, height, dma),
             layer,
         }
     }
@@ -220,38 +217,104 @@ where
 
 impl<B, D, L> DoubleBuffer<B, D, L>
 where
-    B: AsMut<[Argb8888]>,
+    B: AsMut<[Argb8888]> + Default,
     D: BorrowMut<Dma2d>,
     L: Layer,
 {
-    pub async fn swap(&mut self, display: &mut Display<'_>) -> Framebuffer<'_, &mut B> {
-        self.swap_front(display).await.0
-    }
-
-    pub async fn swap_front(
-        &mut self,
-        display: &mut Display<'_>,
-    ) -> (Framebuffer<'_, &mut B>, &mut B) {
-        core::mem::swap(&mut self.front, &mut self.back);
+    pub async fn swap(&mut self, display: &mut Display<'_>) {
+        self.front = self.back.swap_buf(core::mem::take(&mut self.front));
         display.set_buffer(self.front.as_mut() as *mut _ as *const _, self.layer);
         display.ltdc.reload().await;
-        (
-            Framebuffer::new(
-                &mut self.back,
-                self.width,
-                self.height,
-                self.dma.borrow_mut(),
-            ),
-            &mut self.front,
-        )
     }
 
-    pub fn back(&mut self) -> Framebuffer<'_, &mut B> {
-        Framebuffer::new(
-            &mut self.back,
-            self.width,
-            self.height,
-            self.dma.borrow_mut(),
-        )
+    pub async fn copy_from_front(&mut self) {
+        self.back
+            .copy::<dma2d::format::typelevel::Argb8888>(
+                &self.bounding_box(),
+                bytemuck::must_cast_slice(self.front.as_mut()),
+                false,
+            )
+            .await
+    }
+}
+
+impl<B, D, L> OriginDimensions for DoubleBuffer<B, D, L> {
+    fn size(&self) -> Size {
+        self.back.size()
+    }
+}
+
+impl<B, D, L> DrawTarget for DoubleBuffer<B, D, L>
+where
+    Framebuffer<B, D>: DrawTarget,
+{
+    type Color = <Framebuffer<B, D> as DrawTarget>::Color;
+
+    type Error = <Framebuffer<B, D> as DrawTarget>::Error;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = embedded_graphics::Pixel<Self::Color>>,
+    {
+        self.back.draw_iter(pixels)
+    }
+
+    fn fill_contiguous<I>(
+        &mut self,
+        area: &embedded_graphics::primitives::Rectangle,
+        colors: I,
+    ) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Self::Color>,
+    {
+        self.back.fill_contiguous(area, colors)
+    }
+
+    fn fill_solid(
+        &mut self,
+        area: &embedded_graphics::primitives::Rectangle,
+        color: Self::Color,
+    ) -> Result<(), Self::Error> {
+        self.back.fill_solid(area, color)
+    }
+
+    fn clear(&mut self, color: Self::Color) -> Result<(), Self::Error> {
+        self.back.clear(color)
+    }
+}
+
+impl<B, D, L> Accelerated for DoubleBuffer<B, D, L>
+where
+    Framebuffer<B, D>: Accelerated,
+{
+    async fn fill_rect(
+        &mut self,
+        area: &embedded_graphics::primitives::Rectangle,
+        color: Argb8888,
+    ) {
+        self.back.fill_rect(area, color).await
+    }
+
+    async fn copy<Format>(
+        &mut self,
+        area: &embedded_graphics::primitives::Rectangle,
+        source: &[Format::Repr],
+        blend: bool,
+    ) where
+        Format: super::gui::format::Format,
+    {
+        self.back.copy::<Format>(area, source, blend).await
+    }
+
+    async fn copy_with_color<Format>(
+        &mut self,
+        area: &embedded_graphics::primitives::Rectangle,
+        source: &[Format::Repr],
+        color: Argb8888,
+        blend: bool,
+    ) where
+        Format: super::gui::format::Grayscale,
+    {
+        self.back.copy_with_color::<Format>(area, source, color, blend).await
     }
 }

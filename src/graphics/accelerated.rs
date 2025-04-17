@@ -1,5 +1,7 @@
+use core::borrow::BorrowMut;
 use core::convert::Infallible;
 use core::iter::FusedIterator;
+use core::mem;
 use core::ops::Range;
 use core::ops::RangeBounds;
 use core::slice;
@@ -14,6 +16,7 @@ use embedded_graphics::primitives::Rectangle;
 
 use super::color::Argb8888;
 use super::display::dma2d;
+use super::display::dma2d::Dma2d;
 use super::display::dma2d::InputConfig;
 use super::display::dma2d::OutputConfig;
 use super::display::dma2d::format::typelevel as format;
@@ -22,11 +25,11 @@ use super::gui::Accelerated;
 #[cfg(not(target_pointer_width = "32"))]
 compile_error!("targets with pointer width other than 32 not supported");
 
-pub struct Framebuffer<'a, B> {
+pub struct Framebuffer<B, D> {
     buf: B,
     width: u16,
     height: u16,
-    dma: &'a mut super::display::dma2d::Dma2d,
+    dma: D,
 }
 
 /// A backing buffer that can be upgraded to a [`Framebuffer`]
@@ -40,7 +43,7 @@ pub struct Backing<B> {
     height: u16,
 }
 
-impl<B> Framebuffer<'_, B> {
+impl<B, D> Framebuffer<B, D> {
     /// Get the number of pixels in this framebuffer.
     pub fn len(&self) -> usize {
         self.width as usize * self.height as usize
@@ -103,15 +106,12 @@ where
 
     /// Create a new framebuffer borrowing `self` as backing buffer
     /// and using the provided DMA accelerator.
-    pub fn with_dma<'buf, 'dma>(
-        &'buf mut self,
-        dma: &'dma mut dma2d::Dma2d,
-    ) -> Framebuffer<'dma, &'buf mut B> {
+    pub fn with_dma<'buf, D>(&'buf mut self, dma: D) -> Framebuffer<&'buf mut B, D> {
         Framebuffer::new(&mut self.buf, self.width, self.height, dma)
     }
 }
 
-impl<'a, B> Framebuffer<'a, B>
+impl<B, D> Framebuffer<B, D>
 where
     B: AsMut<[Argb8888]>,
 {
@@ -120,7 +120,7 @@ where
     /// # Panics
     ///
     /// Panics if `width * height != buf.as_mut().len()`.
-    pub fn new(buf: B, width: u16, height: u16, dma: &'a mut dma2d::Dma2d) -> Self {
+    pub fn new(buf: B, width: u16, height: u16, dma: D) -> Self {
         let mut buf = buf;
         assert_eq!(width as usize * height as usize, buf.as_mut().len());
         Self {
@@ -129,6 +129,16 @@ where
             height,
             dma,
         }
+    }
+
+    /// Swap out the backing buffer,
+    ///
+    /// # Panics
+    ///
+    /// Panics iff `buf.len() != self.buf.len()`.
+    pub fn swap_buf(&mut self, mut buf: B) -> B {
+        assert_eq!(buf.as_mut().len(), self.buf.as_mut().len());
+        mem::replace(&mut self.buf, buf)
     }
 
     /// Get an iterator over the framebuffer's rows, subsliced to a specified range.
@@ -149,9 +159,10 @@ where
     }
 }
 
-impl<B> Accelerated for Framebuffer<'_, B>
+impl<B, D> Accelerated for Framebuffer<B, D>
 where
     B: AsMut<[Argb8888]>,
+    D: BorrowMut<Dma2d>,
 {
     /// Copy the source image into this framebuffer.
     ///
@@ -172,10 +183,14 @@ where
 
         if blend {
             self.dma
+                .borrow_mut()
                 .transfer_onto::<format::Argb8888, Format>(buf, &out_cfg, &fg, None)
                 .await
         } else {
-            self.dma.transfer_memory::<format::Argb8888, Format>(buf, &out_cfg, &fg).await
+            self.dma
+                .borrow_mut()
+                .transfer_memory::<format::Argb8888, Format>(buf, &out_cfg, &fg)
+                .await
         }
     }
 
@@ -200,10 +215,14 @@ where
 
         if blend {
             self.dma
+                .borrow_mut()
                 .transfer_onto::<format::Argb8888, Format>(buf, &out_cfg, &fg, None)
                 .await
         } else {
-            self.dma.transfer_memory::<format::Argb8888, Format>(buf, &out_cfg, &fg).await
+            self.dma
+                .borrow_mut()
+                .transfer_memory::<format::Argb8888, Format>(buf, &out_cfg, &fg)
+                .await
         }
     }
 
@@ -211,11 +230,11 @@ where
     async fn fill_rect(&mut self, area: &Rectangle, color: Argb8888) {
         let (out_cfg, range) = self.output_cfg(area);
         let buf = bytemuck::must_cast_slice_mut(&mut self.buf.as_mut()[range]);
-        self.dma.fill::<format::Argb8888>(buf, &out_cfg, color).await
+        self.dma.borrow_mut().fill::<format::Argb8888>(buf, &out_cfg, color).await
     }
 }
 
-impl<B> OriginDimensions for Framebuffer<'_, B> {
+impl<B, D> OriginDimensions for Framebuffer<B, D> {
     fn size(&self) -> Size {
         Size {
             width: self.width.into(),
@@ -233,9 +252,10 @@ impl<B> OriginDimensions for Backing<B> {
     }
 }
 
-impl<B> DrawTarget for Framebuffer<'_, B>
+impl<B, D> DrawTarget for Framebuffer<B, D>
 where
     B: AsMut<[Argb8888]>,
+    D: BorrowMut<Dma2d>,
 {
     type Color = Argb8888;
     type Error = Infallible;
@@ -291,7 +311,7 @@ where
         let (range, offset) = self.range_and_offset(&area);
         let width = area.size.width as u16;
         let height = area.size.height as u16;
-        self.dma.fill_blocking::<format::Argb8888>(
+        self.dma.borrow_mut().fill_blocking::<format::Argb8888>(
             bytemuck::must_cast_slice_mut(&mut self.buf.as_mut()[range]),
             &OutputConfig::new(width, height, offset),
             color,
