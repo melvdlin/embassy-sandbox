@@ -17,9 +17,9 @@ use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::join::join3;
 use embassy_net::Ipv4Address;
-use embassy_sandbox::graphics::accelerated::Backing;
 use embassy_sandbox::graphics::color::Argb8888;
 use embassy_sandbox::graphics::display;
+use embassy_sandbox::graphics::display::DoubleBuffer;
 use embassy_sandbox::graphics::display::LayerConfig;
 use embassy_sandbox::graphics::gui::Accelerated;
 use embassy_sandbox::graphics::gui::Alignment;
@@ -63,8 +63,10 @@ const MAC_ADDR: [u8; 6] = [0x02, 0xC7, 0x52, 0x67, 0x83, 0xEF];
 bind_interrupts!(struct Irqs {
     ETH => net::EthIrHandler;
     RNG => net::RngIrHandler;
-    DSI => display::DSIInterruptHandler;
+    DSI => display::DsiInterruptHandler;
     DMA2D => display::Dma2dInterruptHandler;
+    LTDC => display::LtdcInterruptHandler;
+    LTDC_ER => display::LtdcErrorInterruptHandler;
 });
 
 #[embassy_executor::main]
@@ -147,13 +149,13 @@ async fn _main(spawner: Spawner) -> ! {
         DHCP_UP.dyn_receiver().expect("not enough watch receivers available"),
     );
 
-    let mut dma2d = display::dma2d::Dma2d::init(p.DMA2D, Irqs);
+    let dma2d = display::dma2d::Dma2d::init(p.DMA2D, Irqs);
 
     const PIXELS: usize = display::WIDTH as usize * display::HEIGHT as usize;
-    let (layer0, tail) = memory.split_at_mut(PIXELS);
-    let (layer1, _tail) = tail.split_at_mut(PIXELS);
-    let layer0: &'static mut [Argb8888] = bytemuck::must_cast_slice_mut(layer0);
-    let layer1: &'static mut [Argb8888] = bytemuck::must_cast_slice_mut(layer1);
+    let (front, tail) = memory.split_at_mut(PIXELS);
+    let (back, _tail) = tail.split_at_mut(PIXELS);
+    let front: &'static mut [Argb8888] = bytemuck::must_cast_slice_mut(front);
+    let back: &'static mut [Argb8888] = bytemuck::must_cast_slice_mut(back);
     let display_config = display::Config {
         framerate: display::FrameRateHz::_65,
         orientation: display::Orientation::Landscape,
@@ -162,10 +164,9 @@ async fn _main(spawner: Spawner) -> ! {
         cols: NonZeroU16::new(display::WIDTH).expect("width must be nonzero"),
     };
 
-    let mut buf = [layer0, layer1];
-    let buf_ptr = buf.each_mut().map(|buf| *buf as *mut _ as *const _);
-    let layer0_cfg = LayerConfig {
-        framebuffer: buf_ptr[0],
+    let front_ptr = front as *mut _ as *const _;
+    let layer_cfg = LayerConfig {
+        framebuffer: front_ptr,
         x_offset: 0,
         y_offset: 0,
         width: display_config.cols.get(),
@@ -174,43 +175,50 @@ async fn _main(spawner: Spawner) -> ! {
         alpha: 0xFF,
         default_color: Argb8888::from_u32(0x00000000),
     };
-    let layer_cfg = [
-        layer0_cfg,
-        LayerConfig {
-            framebuffer: buf_ptr[1],
-            ..layer0_cfg
-        },
-    ];
-    let (mut disp, typelevel::Some(layer_0), typelevel::Some(_layer_1)) =
-        display::Display::init(
-            p.DSIHOST,
-            p.LTDC,
-            &display_config,
-            typelevel::Some(&layer_cfg[0]),
-            typelevel::Some(&layer_cfg[1]),
-            hse,
-            ltdc_clock,
-            lcd_reset_pin,
-            p.PJ2,
-            &mut _button,
-        )
-        .await;
+    let (mut disp, typelevel::Some(layer0), typelevel::None) = display::Display::init(
+        p.DSIHOST,
+        p.LTDC,
+        Irqs,
+        &display_config,
+        typelevel::Some(&layer_cfg),
+        typelevel::None,
+        hse,
+        ltdc_clock,
+        lcd_reset_pin,
+        p.PJ2,
+        &mut _button,
+    )
+    .await;
 
     let rows = display::HEIGHT as usize;
     let cols = display::WIDTH as usize;
-    let mut backing = buf.map(|buf| Backing::new(buf, cols as u16, rows as u16));
-    let bounds = backing[0].bounding_box();
-    let mut buf = backing[0].with_dma(&mut dma2d);
 
-    disp.enable_layer(layer_0, true);
+    let mut buffer =
+        DoubleBuffer::new(cols as u16, rows as u16, front, back, dma2d, layer0);
+    let mut back = buffer.back();
+    let bounds = back.bounding_box();
 
-    buf.fill_rect(&bounds, Argb8888(0xFF7F0057)).await;
+    disp.enable_layer(layer0, true);
+
+    back.fill_rect(&bounds, Argb8888(0xFF7F0057)).await;
+    back.fill_rect(
+        &bounds.resized(bounds.size / 2, AnchorPoint::Center),
+        Argb8888(0xFF660033),
+    )
+    .await;
+    let (mut back, front) = buffer.swap_front(&mut disp).await;
+    back.copy::<display::dma2d::format::typelevel::Argb8888>(
+        &bounds,
+        bytemuck::must_cast_slice(front),
+        false,
+    )
+    .await;
 
     if false {
         Timer::after_secs(1).await;
-        disp.enable_layer(layer_0, false);
+        disp.enable_layer(layer0, false);
         Timer::after_secs(1).await;
-        disp.enable_layer(layer_0, true);
+        disp.enable_layer(layer0, true);
         Timer::after_secs(1).await;
         disp.enable(false).await;
         Timer::after_secs(1).await;
@@ -224,12 +232,6 @@ async fn _main(spawner: Spawner) -> ! {
         Timer::after_secs(1).await;
         disp.set_brightness(0xFF).await;
     }
-
-    buf.fill_rect(
-        &bounds.resized(bounds.size / 2, AnchorPoint::Center),
-        Argb8888(0xFF660033),
-    )
-    .await;
 
     Timer::after_secs(1).await;
 
@@ -248,14 +250,18 @@ async fn _main(spawner: Spawner) -> ! {
         line_break_aware: true,
     };
     let text_bounds = text.bounding_box();
-    let mut translated = buf.translated(Point {
+    let offset = Point {
         x: cols as i32 / 4,
         y: rows as i32 / 4,
-    });
+    };
+
+    let mut translated = back.translated(offset);
 
     text.content.push_str("Hello, world!").unwrap();
     translated.fill_rect(&text_bounds, Argb8888(0xFF440022)).await;
     text.draw(&mut translated, 0).await;
+
+    let mut buf = buffer.swap(&mut disp).await;
 
     text.content.clear();
     text.content.push_str("Lorem ipsum dolo").unwrap();
@@ -267,8 +273,9 @@ async fn _main(spawner: Spawner) -> ! {
     for align in Alignment::ALL.into_iter().chain([Alignment::TOP_LEFT]) {
         text.layout.align = align;
         Timer::after_secs(1).await;
-        translated.fill_rect(&text_bounds, Argb8888(0xFF440022)).await;
-        text.draw(&mut translated, 0).await;
+        buf.translated(offset).fill_rect(&text_bounds, Argb8888(0xFF440022)).await;
+        text.draw(&mut buf.translated(offset), 0).await;
+        buf = buffer.swap(&mut disp).await;
     }
 
     join(blink, net).await.0

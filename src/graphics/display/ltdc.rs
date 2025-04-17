@@ -1,12 +1,22 @@
+use core::future::poll_fn;
+use core::mem;
+use core::sync::atomic::Ordering;
+use core::task::Poll;
+
+use embassy_stm32::interrupt::InterruptExt;
+use embassy_stm32::interrupt::typelevel as interrupt;
+use embassy_stm32::interrupt::typelevel::Interrupt;
 pub use embassy_stm32::ltdc::LtdcLayer as Layer;
 use embassy_stm32::ltdc::RgbColor;
 use embassy_stm32::pac;
+use embassy_stm32::pac::ltdc::regs;
 use embassy_stm32::pac::ltdc::vals;
 use embassy_stm32::pac::ltdc::vals::Depol;
 use embassy_stm32::pac::ltdc::vals::Hspol;
 use embassy_stm32::pac::ltdc::vals::Pcpol;
 use embassy_stm32::pac::ltdc::vals::Vspol;
 use embassy_stm32::peripherals;
+use embassy_sync::waitqueue::AtomicWaker;
 
 use crate::graphics::color::Argb8888;
 
@@ -14,6 +24,7 @@ pub type Peripheral = peripherals::LTDC;
 type PacLtdc = pac::ltdc::Ltdc;
 
 const LTDC: PacLtdc = pac::LTDC;
+static VSYNC: AtomicWaker = AtomicWaker::new();
 
 pub struct Ltdc {
     _peripheral: Peripheral,
@@ -33,9 +44,25 @@ pub struct LayerConfig {
     pub default_color: Argb8888,
 }
 
+bitflags::bitflags! {
+    #[derive(Debug)]
+    #[derive(Clone, Copy)]
+    #[derive(PartialEq, Eq)]
+    #[derive(Hash)]
+    #[derive(Default)]
+    struct Interrupts: u32 {
+        const LINE = 1 << 0;
+        const FIFO_UNDERRUN = 1 << 1;
+        const TX_ERROR = 1 << 2;
+        const REGISTER_RELOAD = 1 << 3;
+    }
+}
+
 impl Ltdc {
     pub fn init(
         ltdc: Peripheral,
+        _irq: impl interrupt::Binding<interrupt::LTDC, InterruptHandler>
+        + interrupt::Binding<interrupt::LTDC_ER, ErrorInterruptHandler>,
         background: RgbColor,
         cfg: &embassy_stm32::ltdc::LtdcConfiguration,
     ) -> Self {
@@ -99,6 +126,8 @@ impl Ltdc {
             w.set_bcgreen(background.green);
             w.set_bcblue(background.blue);
         });
+
+        Interrupts::REGISTER_RELOAD.enable();
 
         // TODO: enable and handle error IRs
 
@@ -173,6 +202,101 @@ impl Ltdc {
 
     pub fn enable_layer(&mut self, layer: Layer, enable: bool) {
         LTDC.layer(layer as usize).cr().modify(|w| w.set_len(enable));
-        LTDC.srcr().modify(|w| w.set_imr(vals::Imr::RELOAD));
+        LTDC.srcr().write(|w| w.set_imr(vals::Imr::RELOAD));
+    }
+
+    pub fn set_framebuffer(&mut self, buffer: *const (), layer: Layer) {
+        LTDC.layer(layer as usize).cfbar().write(|w| w.set_cfbadd(buffer as u32));
+    }
+
+    pub async fn reload(&mut self) {
+        core::sync::atomic::compiler_fence(Ordering::SeqCst);
+        let mut polled = false;
+        poll_fn(|cx| {
+            if !mem::replace(&mut polled, true) {
+                cortex_m::interrupt::free(|_cs| {
+                    VSYNC.register(cx.waker());
+                    Interrupts::clear_pending();
+                    Interrupts::enable_vector();
+                    LTDC.srcr().write(|w| w.set_vbr(vals::Vbr::RELOAD));
+                });
+
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        })
+        .await;
+        core::sync::atomic::compiler_fence(Ordering::SeqCst);
+    }
+}
+
+impl Interrupts {
+    #[inline]
+    pub fn read() -> Self {
+        let flags = LTDC.isr().read();
+        Self::from_bits_truncate(flags.0)
+    }
+
+    #[inline]
+    pub fn clear(self) {
+        LTDC.icr().write_value(regs::Icr(self.bits()));
+    }
+
+    #[inline]
+    pub fn enable(self) {
+        LTDC.ier().write_value(regs::Ier(self.bits()));
+    }
+
+    #[inline]
+    pub fn clear_pending() {
+        interrupt::LTDC::unpend();
+    }
+
+    #[inline]
+    pub fn clear_pending_error() {
+        interrupt::LTDC::unpend();
+    }
+
+    #[inline]
+    pub fn enable_vector() {
+        // Safety: critical section is priority based, not mask based
+        unsafe {
+            interrupt::LTDC::enable();
+        }
+    }
+
+    #[inline]
+    pub fn disable_vector() {
+        interrupt::LTDC::disable();
+    }
+
+    #[inline]
+    pub fn enable_error_vector() {
+        // Safety: critical section is priority based, not mask based
+        unsafe {
+            interrupt::LTDC_ER::enable();
+        }
+    }
+
+    #[inline]
+    pub fn disable_error_vector() {
+        interrupt::LTDC_ER::disable();
+    }
+}
+
+pub struct InterruptHandler {}
+pub struct ErrorInterruptHandler {}
+
+impl interrupt::Handler<interrupt::LTDC> for InterruptHandler {
+    unsafe fn on_interrupt() {
+        Interrupts::disable_vector();
+        VSYNC.wake();
+    }
+}
+
+impl interrupt::Handler<interrupt::LTDC_ER> for ErrorInterruptHandler {
+    unsafe fn on_interrupt() {
+        Interrupts::disable_error_vector();
     }
 }
