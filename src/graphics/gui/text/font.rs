@@ -1,33 +1,33 @@
 use core::ops::Range;
 
-use super::AsciiRangeMap;
+use super::CharRangeMap;
 use crate::graphics::gui::format::A8;
 
 // TODO: support entire ascii range
-pub static FIRA_MONO_16: AsciiRangeMap<'static, A8> =
+pub static FIRA_MONO_16: CharRangeMap<'static, A8> =
     parse_pgm(include_bytes!("font/firamono_16.pgm"), 16, 32..127);
-pub static FIRA_MONO_18: AsciiRangeMap<'static, A8> =
+pub static FIRA_MONO_18: CharRangeMap<'static, A8> =
     parse_pgm(include_bytes!("font/firamono_18.pgm"), 18, 32..127);
-pub static FIRA_MONO_24: AsciiRangeMap<'static, A8> =
+pub static FIRA_MONO_24: CharRangeMap<'static, A8> =
     parse_pgm(include_bytes!("font/firamono_24.pgm"), 24, 32..127);
-pub static FIRA_MONO_28: AsciiRangeMap<'static, A8> =
+pub static FIRA_MONO_28: CharRangeMap<'static, A8> =
     parse_pgm(include_bytes!("font/firamono_28.pgm"), 28, 32..127);
-pub static FIRA_MONO_32: AsciiRangeMap<'static, A8> =
+pub static FIRA_MONO_32: CharRangeMap<'static, A8> =
     parse_pgm(include_bytes!("font/firamono_32.pgm"), 32, 32..127);
-pub static FIRA_MONO_40: AsciiRangeMap<'static, A8> =
-    parse_pgm(include_bytes!("font/firamono_40.pgm"), 40, 0..128);
-pub static FIRA_MONO_48: AsciiRangeMap<'static, A8> =
+pub static FIRA_MONO_40: CharRangeMap<'static, A8> =
+    parse_pgm(include_bytes!("font/firamono_40.pgm"), 40, 32..127);
+pub static FIRA_MONO_48: CharRangeMap<'static, A8> =
     parse_pgm(include_bytes!("font/firamono_48.pgm"), 48, 32..127);
-pub static FIRA_MONO_56: AsciiRangeMap<'static, A8> =
+pub static FIRA_MONO_56: CharRangeMap<'static, A8> =
     parse_pgm(include_bytes!("font/firamono_56.pgm"), 56, 32..127);
-pub static FIRA_MONO_64: AsciiRangeMap<'static, A8> =
+pub static FIRA_MONO_64: CharRangeMap<'static, A8> =
     parse_pgm(include_bytes!("font/firamono_64.pgm"), 64, 32..127);
 
 const fn parse_pgm(
     data: &[u8],
     char_height: u16,
-    mapped_chars: Range<u8>,
-) -> AsciiRangeMap<'_, A8> {
+    mapped_chars: Range<u32>,
+) -> CharRangeMap<'_, A8> {
     let [b'P', b'5', data @ ..] = data else {
         panic!("magic number doesn't match");
     };
@@ -56,7 +56,7 @@ const fn parse_pgm(
     assert!(char_size * (len + 1) == data.len());
     let (chars, fallback) = data.split_at(char_size * len);
 
-    AsciiRangeMap::new(mapped_chars, width, char_height, chars, fallback)
+    CharRangeMap::new(mapped_chars, width, char_height, chars, fallback)
 }
 
 const fn next_u32(data: &[u8]) -> Option<(u32, &[u8])> {

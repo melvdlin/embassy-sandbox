@@ -5,6 +5,8 @@ pub mod boxes;
 pub mod text;
 
 use core::convert::Infallible;
+use core::ops::BitOr;
+use core::ops::BitOrAssign;
 
 pub use dma2d::format::typelevel as format;
 use embedded_graphics::prelude::Dimensions;
@@ -66,8 +68,10 @@ pub trait Drawable: embedded_graphics::prelude::Dimensions {
 #[derive(Clone, Copy)]
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 #[derive(Hash)]
+#[derive(Default)]
 pub enum HAlignment {
     /// Aligned to the left edge.
+    #[default]
     Left,
     /// Aligned to the center.
     Center,
@@ -75,18 +79,175 @@ pub enum HAlignment {
     Right,
 }
 
+impl HAlignment {
+    pub const ALL: [Self; 3] = [Self::Left, Self::Center, Self::Right];
+
+    pub const fn with_v(self, v: VAlignment) -> Alignment {
+        Alignment::new(self, v)
+    }
+
+    pub const fn top(self) -> Alignment {
+        self.with_v(VAlignment::Top)
+    }
+
+    pub const fn center(self) -> Alignment {
+        self.with_v(VAlignment::Center)
+    }
+
+    pub const fn bottom(self) -> Alignment {
+        self.with_v(VAlignment::Bottom)
+    }
+}
+
 /// Vertical alignment.
 #[derive(Debug)]
 #[derive(Clone, Copy)]
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 #[derive(Hash)]
+#[derive(Default)]
 pub enum VAlignment {
     /// Aligned to the top edge.
+    #[default]
     Top,
     /// Aligned to the center.
     Center,
     /// Aligned to the bottom.
     Bottom,
+}
+
+impl VAlignment {
+    pub const ALL: [Self; 3] = [Self::Top, Self::Center, Self::Bottom];
+
+    pub const fn with_h(self, h: HAlignment) -> Alignment {
+        Alignment::new(h, self)
+    }
+
+    pub const fn left(self) -> Alignment {
+        self.with_h(HAlignment::Left)
+    }
+
+    pub const fn center(self) -> Alignment {
+        self.with_h(HAlignment::Center)
+    }
+    pub const fn right(self) -> Alignment {
+        self.with_h(HAlignment::Right)
+    }
+}
+
+/// Horizontal and Vertical Alignment.
+#[derive(Debug)]
+#[derive(Clone, Copy)]
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Hash)]
+#[derive(Default)]
+pub struct Alignment {
+    /// Horizontal alignment.
+    pub h: HAlignment,
+    /// Vertical Alignment.
+    pub v: VAlignment,
+}
+
+impl Alignment {
+    pub const fn new(h: HAlignment, v: VAlignment) -> Self {
+        Self { h, v }
+    }
+
+    pub const fn with_h(self, h: HAlignment) -> Self {
+        Self { h, ..self }
+    }
+
+    pub const fn with_v(self, v: VAlignment) -> Self {
+        Self { v, ..self }
+    }
+
+    pub const fn left(self) -> Self {
+        self.with_h(HAlignment::Left)
+    }
+
+    pub const fn h_center(self) -> Self {
+        self.with_h(HAlignment::Center)
+    }
+
+    pub const fn right(self) -> Self {
+        self.with_h(HAlignment::Right)
+    }
+
+    pub const fn top(self) -> Self {
+        self.with_v(VAlignment::Top)
+    }
+
+    pub const fn v_center(self) -> Self {
+        self.with_v(VAlignment::Center)
+    }
+
+    pub const fn bottom(self) -> Self {
+        self.with_v(VAlignment::Bottom)
+    }
+
+    pub const TOP_LEFT: Self = Self::new(HAlignment::Left, VAlignment::Top);
+    pub const TOP_CENTER: Self = Self::TOP_LEFT.h_center();
+    pub const TOP_RIGHT: Self = Self::TOP_LEFT.right();
+    pub const CENTER_LEFT: Self = Self::TOP_LEFT.v_center();
+    pub const CENTER: Self = Self::CENTER_LEFT.h_center();
+    pub const CENTER_RIGHT: Self = Self::CENTER_LEFT.right();
+    pub const BOTTOM_LEFT: Self = Self::TOP_LEFT.bottom();
+    pub const BOTTOM_CENTER: Self = Self::BOTTOM_LEFT.h_center();
+    pub const BOTTOM_RIGHT: Self = Self::BOTTOM_LEFT.right();
+    pub const ALL: [Self; 9] = [
+        Self::TOP_LEFT,
+        Self::TOP_CENTER,
+        Self::TOP_RIGHT,
+        Self::CENTER_LEFT,
+        Self::CENTER,
+        Self::CENTER_RIGHT,
+        Self::BOTTOM_LEFT,
+        Self::BOTTOM_CENTER,
+        Self::BOTTOM_RIGHT,
+    ];
+}
+
+impl BitOr<VAlignment> for HAlignment {
+    type Output = Alignment;
+
+    fn bitor(self, rhs: VAlignment) -> Self::Output {
+        self.with_v(rhs)
+    }
+}
+
+impl BitOr<HAlignment> for VAlignment {
+    type Output = Alignment;
+
+    fn bitor(self, rhs: HAlignment) -> Self::Output {
+        self.with_h(rhs)
+    }
+}
+
+impl BitOr<HAlignment> for Alignment {
+    type Output = Self;
+
+    fn bitor(self, rhs: HAlignment) -> Self::Output {
+        self.with_h(rhs)
+    }
+}
+
+impl BitOr<VAlignment> for Alignment {
+    type Output = Self;
+
+    fn bitor(self, rhs: VAlignment) -> Self::Output {
+        self.with_v(rhs)
+    }
+}
+
+impl BitOrAssign<HAlignment> for Alignment {
+    fn bitor_assign(&mut self, rhs: HAlignment) {
+        self.h = rhs;
+    }
+}
+
+impl BitOrAssign<VAlignment> for Alignment {
+    fn bitor_assign(&mut self, rhs: VAlignment) {
+        self.v = rhs;
+    }
 }
 
 /// A trait for elements that process touch inputs.

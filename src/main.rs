@@ -22,6 +22,7 @@ use embassy_sandbox::graphics::color::Argb8888;
 use embassy_sandbox::graphics::display;
 use embassy_sandbox::graphics::display::LayerConfig;
 use embassy_sandbox::graphics::gui::Accelerated;
+use embassy_sandbox::graphics::gui::Alignment;
 use embassy_sandbox::graphics::gui::Drawable;
 use embassy_sandbox::graphics::gui::ext::AcceleratedExt;
 use embassy_sandbox::graphics::gui::text::font;
@@ -43,7 +44,6 @@ use embassy_time::Timer;
 use embedded_graphics::geometry::AnchorPoint;
 use embedded_graphics::prelude::Dimensions;
 use embedded_graphics::prelude::Point;
-use embedded_graphics::primitives::Rectangle;
 use rand_core::RngCore;
 
 #[inline(never)]
@@ -227,43 +227,49 @@ async fn _main(spawner: Spawner) -> ! {
 
     buf.fill_rect(
         &bounds.resized(bounds.size / 2, AnchorPoint::Center),
-        Argb8888::from_u32(0xFF660033),
+        Argb8888(0xFF660033),
     )
     .await;
 
     Timer::after_secs(1).await;
 
-    let mut s = heapless::String::<64>::new();
-    s.push_str("Hello, world!").unwrap();
     let mut text = TextBox {
-        content: s,
+        content: heapless::String::<64>::new(),
         color: Argb8888(0xff326ba6),
-        layout: textbox::Layout {
-            char_map: &font::FIRA_MONO_40,
-            cols: 16,
-            rows: 3,
+        layout: textbox::AlignedLayout {
+            layout: textbox::Layout {
+                char_map: &font::FIRA_MONO_40,
+                cols: 16,
+                rows: 6,
+            },
+            align: Alignment::TOP_LEFT,
         },
-        layer: 1,
+        layer: 0,
         line_break_aware: true,
     };
+    let text_bounds = text.bounding_box();
     let mut translated = buf.translated(Point {
         x: cols as i32 / 4,
         y: rows as i32 / 4,
     });
 
-    text.draw(&mut translated, 1).await;
+    text.content.push_str("Hello, world!").unwrap();
+    translated.fill_rect(&text_bounds, Argb8888(0xFF440022)).await;
+    text.draw(&mut translated, 0).await;
 
     text.content.clear();
-    text.content.push_str("lorem ipsum dolor sit amet").unwrap();
+    text.content.push_str("Lorem ipsum dolo").unwrap();
+    text.content.push_str("r").unwrap();
+    text.content.push_str("\n").unwrap();
+    text.content.push_str("\nsit amet,").unwrap();
+    text.content.push_str("\nconsectetur").unwrap();
 
-    Timer::after_secs(1).await;
-    translated
-        .fill_rect(
-            &Rectangle::new(Point::zero(), bounds.size / 2),
-            Argb8888::from_u32(0xFF660033),
-        )
-        .await;
-    text.draw(&mut translated, 1).await;
+    for align in Alignment::ALL.into_iter().chain([Alignment::TOP_LEFT]) {
+        text.layout.align = align;
+        Timer::after_secs(1).await;
+        translated.fill_rect(&text_bounds, Argb8888(0xFF440022)).await;
+        text.draw(&mut translated, 0).await;
+    }
 
     join(blink, net).await.0
 }

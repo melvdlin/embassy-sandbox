@@ -1,15 +1,19 @@
+use core::cmp;
 use core::iter::FusedIterator;
 
-use ascii::AsciiChar;
 use embedded_graphics::prelude::OriginDimensions;
 use embedded_graphics::prelude::Point;
 use embedded_graphics::prelude::Size;
 use embedded_graphics::primitives::Rectangle;
+use itertools::Either;
 
-use super::AsciiMap;
+use super::CharMap;
 use crate::graphics::color::Argb8888;
 use crate::graphics::gui::Accelerated;
+use crate::graphics::gui::Alignment;
 use crate::graphics::gui::Drawable;
+use crate::graphics::gui::HAlignment;
+use crate::graphics::gui::VAlignment;
 use crate::graphics::gui::format::Grayscale;
 
 // TODO: add alignment support
@@ -35,7 +39,7 @@ impl<C> Layout<C> {
 
 impl<C> Layout<C>
 where
-    C: AsciiMap,
+    C: CharMap,
 {
     pub fn position(&self, i: usize) -> Option<Point> {
         let row = i / self.cols;
@@ -65,13 +69,217 @@ where
 
 impl<C> OriginDimensions for Layout<C>
 where
-    C: AsciiMap,
+    C: CharMap,
 {
     fn size(&self) -> Size {
         self.char_map.char_size().component_mul(Size {
             width: self.cols as _,
             height: self.rows as _,
         })
+    }
+}
+
+#[derive(Debug)]
+#[derive(Clone, Copy)]
+#[derive(PartialEq, Eq)]
+#[derive(Default)]
+pub struct AlignedLayout<C> {
+    pub layout: Layout<C>,
+    pub align: Alignment,
+}
+
+impl<C> AlignedLayout<C> {
+    pub fn new(layout: Layout<C>, align: Alignment) -> Self {
+        Self { layout, align }
+    }
+}
+
+impl<C> AlignedLayout<C>
+where
+    C: CharMap,
+{
+    pub fn positions<L>(
+        &self,
+        line_lengths: impl IntoIterator<IntoIter = L>,
+    ) -> AlignedPositions<'_, C, L>
+    where
+        C: CharMap,
+        L: Iterator<Item = usize>,
+        L: Clone,
+    {
+        AlignedPositions::new(self, line_lengths)
+    }
+}
+
+impl<C> OriginDimensions for AlignedLayout<C>
+where
+    C: CharMap,
+{
+    fn size(&self) -> Size {
+        self.layout.size()
+    }
+}
+
+pub struct AlignedPositions<'a, C, L> {
+    layout: &'a AlignedLayout<C>,
+    lines: L,
+    current_line_len: usize,
+    row: usize,
+    col: usize,
+    v_half_shift: bool,
+    h_half_shift: bool,
+}
+
+impl<C, L> AlignedPositions<'_, C, L> {
+    fn is_exhausted(&self) -> bool {
+        #[allow(clippy::nonminimal_bool)]
+        !(self.row < self.layout.layout.rows)
+    }
+
+    fn exhaust(&mut self) {
+        self.row = self.layout.layout.rows;
+    }
+}
+
+impl<'a, C, L> AlignedPositions<'a, C, L>
+where
+    C: CharMap,
+    L: Iterator<Item = usize>,
+    L: Clone,
+{
+    pub fn new(
+        layout: &'a AlignedLayout<C>,
+        line_lengths: impl IntoIterator<IntoIter = L>,
+    ) -> Self {
+        let mut line_lengths = line_lengths.into_iter();
+        let (row, v_half_shift) = if layout.align.v == VAlignment::Top {
+            (0, false)
+        } else {
+            let total_height = line_lengths
+                .clone()
+                // empty lines don't get discarded
+                .map(|len| cmp::max(1, len).div_ceil(layout.layout.cols))
+                .sum::<usize>();
+            let free = layout.layout.rows.saturating_sub(total_height);
+            if layout.align.v == VAlignment::Bottom {
+                (free, false)
+            } else {
+                (free / 2, free % 2 != 0)
+            }
+        };
+
+        let mut iter = Self {
+            layout,
+            current_line_len: line_lengths.next().unwrap_or(0),
+            lines: line_lengths,
+            row,
+            col: 0,
+            v_half_shift,
+            h_half_shift: false,
+        };
+        if iter.layout.layout.cols == 0 {
+            iter.exhaust();
+        } else {
+            (iter.col, iter.h_half_shift) = iter.first_col();
+        }
+
+        iter
+    }
+}
+
+impl<C, L> AlignedPositions<'_, C, L>
+where
+    C: CharMap,
+    L: Iterator<Item = usize>,
+{
+    /// Returns the column index and horizontal half-column shift
+    /// of the first character in the current line and row.
+    fn first_col(&self) -> (usize, bool) {
+        if self.layout.align.h == HAlignment::Left {
+            (0, false)
+        } else {
+            let free = self.layout.layout.cols.saturating_sub(self.current_line_len);
+            if self.layout.align.h == HAlignment::Right {
+                (free, false)
+            } else {
+                (free / 2, free % 2 != 0)
+            }
+        }
+    }
+
+    /// Set the cursor to the start of the next, non-empty line that fits within the layout.
+    /// Exhausts `self` and returns `false` iff no such line exists.
+    fn next_nonempty_line(&mut self) -> bool {
+        while self.current_line_len == 0 && !self.is_exhausted() {
+            let Some(line) = self.lines.next() else {
+                self.exhaust();
+                break;
+            };
+            self.current_line_len = line;
+            self.row += 1;
+        }
+
+        if self.is_exhausted() {
+            return false;
+        }
+
+        (self.col, self.h_half_shift) = self.first_col();
+
+        true
+    }
+
+    /// Advance the cursor to the next position.
+    /// Returns `false` iff this results in `self` being exhausted.
+    fn advance(&mut self) -> bool {
+        if self.current_line_len != 0 {
+            self.col += 1;
+            if self.col + self.h_half_shift as (usize) < self.layout.layout.cols {
+                return true;
+            }
+            self.row += 1;
+            if self.is_exhausted() {
+                return false;
+            }
+            (self.col, self.h_half_shift) = self.first_col();
+            true
+        } else {
+            self.next_nonempty_line()
+        }
+    }
+}
+
+impl<C, L> Iterator for AlignedPositions<'_, C, L>
+where
+    C: CharMap,
+    L: Iterator<Item = usize>,
+{
+    type Item = Point;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.is_exhausted() {
+            return None;
+        }
+
+        self.current_line_len -= 1;
+
+        let size = self.layout.layout.char_map.char_size();
+        let size = Point {
+            x: size.width as i32,
+            y: size.height as i32,
+        };
+        let base = size.component_mul(Point {
+            x: self.col as i32,
+            y: self.row as i32,
+        });
+        let shift = size.component_mul(Point {
+            x: self.h_half_shift as i32,
+            y: self.v_half_shift as i32,
+        }) / 2;
+        let next = base + shift;
+
+        self.advance();
+
+        Some(next)
     }
 }
 
@@ -85,7 +293,7 @@ pub struct Positions<'a, C> {
 
 impl<C> Iterator for Positions<'_, C>
 where
-    C: AsciiMap,
+    C: CharMap,
 {
     type Item = Point;
 
@@ -133,7 +341,7 @@ impl<C> PositionsFrom<'_, C> {
 
 impl<C> Iterator for PositionsFrom<'_, C>
 where
-    C: AsciiMap,
+    C: CharMap,
 {
     type Item = Point;
 
@@ -179,7 +387,7 @@ impl<C> FusedIterator for PositionsFrom<'_, C> where Self: Iterator {}
 pub struct TextBox<C, S> {
     pub content: S,
     pub color: Argb8888,
-    pub layout: Layout<C>,
+    pub layout: AlignedLayout<C>,
     pub layer: usize,
     pub line_break_aware: bool,
 }
@@ -188,7 +396,7 @@ impl<C, S> TextBox<C, S> {
     pub const fn new(
         content: S,
         color: Argb8888,
-        layout: Layout<C>,
+        layout: AlignedLayout<C>,
         layer: usize,
         line_break_aware: bool,
     ) -> Self {
@@ -204,7 +412,7 @@ impl<C, S> TextBox<C, S> {
 
 impl<C, S> OriginDimensions for TextBox<C, S>
 where
-    C: AsciiMap,
+    C: CharMap,
 {
     fn size(&self) -> Size {
         self.layout.size()
@@ -213,7 +421,7 @@ where
 
 impl<C, S> Drawable for TextBox<C, S>
 where
-    C: AsciiMap,
+    C: CharMap,
     C::Format: Grayscale,
     S: AsRef<str>,
 {
@@ -222,29 +430,22 @@ where
             return;
         }
         let layout = &self.layout;
-        let char_map = &layout.char_map;
+        let char_map = &layout.layout.char_map;
 
-        let mut positions = self.layout.positions_from(0, 0);
+        let positions = self.layout.positions(if self.line_break_aware {
+            Either::Left(self.content.as_ref().lines().map(str::len))
+        } else {
+            Either::Right(core::iter::once(self.content.as_ref().len()))
+        });
 
-        for char in self.content.as_ref().chars() {
-            if self.line_break_aware {
-                if char == '\n' {
-                    positions.line_break();
-                    continue;
-                }
-                if char == '\r' {
-                    continue;
-                }
-            }
-
-            let Some(position) = positions.next() else {
-                break;
-            };
-
-            let char = AsciiChar::from_ascii(char)
-                .ok()
-                .and_then(|char| char_map.char(char))
-                .unwrap_or(char_map.fallback());
+        for (char, position) in self
+            .content
+            .as_ref()
+            .chars()
+            .filter(|char| !(self.line_break_aware && matches!(char, '\n' | '\r')))
+            .zip(positions)
+        {
+            let char = char_map.char(char).unwrap_or(char_map.fallback());
 
             framebuffer
                 .copy_with_color::<C::Format>(
