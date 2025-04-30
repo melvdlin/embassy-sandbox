@@ -15,6 +15,15 @@ use embedded_graphics::pixelcolor::raw::RawU16;
 use embedded_graphics::pixelcolor::raw::RawU32;
 use embedded_graphics::prelude::RawData;
 
+pub type Repr<F> = <F as Format>::Repr;
+pub trait Format {
+    type Repr: bytemuck::Pod;
+}
+
+pub trait Grayscale: Format {}
+
+pub trait Alpha: Format {}
+
 #[derive(Debug)]
 #[derive(Clone, Copy)]
 #[derive(PartialEq, Eq)]
@@ -83,6 +92,10 @@ impl Argb8888 {
     pub const fn argb(self) -> [u8; 4] {
         self.into_u32().to_be_bytes()
     }
+}
+
+impl Format for Argb8888 {
+    type Repr = Self;
 }
 
 impl Display for Argb8888 {

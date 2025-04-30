@@ -2,8 +2,10 @@ use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::Rectangle;
 
 use super::Accelerated;
-use super::dma2d::format::typelevel as format;
+use super::AcceleratedBase;
 use crate::graphics::color::Argb8888;
+use crate::graphics::color::Format;
+use crate::graphics::color::Grayscale;
 
 pub trait AcceleratedExt {
     fn translated(&mut self, offset: Point) -> Translated<'_, Self>;
@@ -11,7 +13,7 @@ pub trait AcceleratedExt {
 
 impl<A> AcceleratedExt for A
 where
-    A: Accelerated,
+    A: AcceleratedBase,
 {
     fn translated(&mut self, offset: Point) -> Translated<'_, Self> {
         Translated {
@@ -89,36 +91,35 @@ where
     }
 }
 
-impl<A> Accelerated for Translated<'_, A>
+impl<A> AcceleratedBase for Translated<'_, A>
 where
-    A: Accelerated,
+    A: AcceleratedBase,
 {
     async fn fill_rect(&mut self, area: &Rectangle, color: Argb8888) {
         self.surface.fill_rect(&area.translate(self.offset), color).await
     }
+}
 
-    async fn copy<Format>(
-        &mut self,
-        area: &Rectangle,
-        source: &[Format::Repr],
-        blend: bool,
-    ) where
-        Format: format::Format,
-    {
-        self.surface.copy::<Format>(&area.translate(self.offset), source, blend).await
+impl<F, A> Accelerated<F> for Translated<'_, A>
+where
+    F: Format,
+    A: Accelerated<F>,
+{
+    async fn copy(&mut self, area: &Rectangle, source: &[F::Repr], blend: bool) {
+        self.surface.copy(&area.translate(self.offset), source, blend).await
     }
 
-    async fn copy_with_color<Format>(
+    async fn copy_with_color(
         &mut self,
         area: &Rectangle,
-        source: &[Format::Repr],
+        source: &[F::Repr],
         color: Argb8888,
         blend: bool,
     ) where
-        Format: format::Grayscale,
+        F: Grayscale,
     {
         self.surface
-            .copy_with_color::<Format>(&area.translate(self.offset), source, color, blend)
+            .copy_with_color(&area.translate(self.offset), source, color, blend)
             .await
     }
 }

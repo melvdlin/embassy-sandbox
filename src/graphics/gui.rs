@@ -8,36 +8,35 @@ use core::convert::Infallible;
 use core::ops::BitOr;
 use core::ops::BitOrAssign;
 
-pub use dma2d::format::typelevel as format;
 use embedded_graphics::prelude::Dimensions;
 use embedded_graphics::prelude::DrawTarget;
 use embedded_graphics::prelude::Point;
 use embedded_graphics::primitives::Rectangle;
 
 use super::color::Argb8888;
-use super::display::dma2d;
+use super::color::Format;
+use super::color::Grayscale;
+pub use super::display::dma2d::format::typelevel as format;
 
-type Repr<Format> = <Format as format::Format>::Repr;
+type Repr<F> = <F as Format>::Repr;
 
-/// A trait for hardware accelerated draw targets.
+/// A trait for draw targets with accelerated primitives.
 #[allow(async_fn_in_trait)]
-pub trait Accelerated: DrawTarget<Color = Argb8888, Error = Infallible> {
+pub trait AcceleratedBase: DrawTarget<Color = Argb8888, Error = Infallible> {
     /// Draw a rectangle in the speicifed color.
     async fn fill_rect(&mut self, area: &Rectangle, color: Argb8888);
+}
 
+/// A trait for draw targets with hardware accelerated copying.
+#[allow(async_fn_in_trait)]
+pub trait Accelerated<F: Format>: AcceleratedBase {
     /// Copy the source image into this framebuffer,
     /// optionally blending it with the current framebuffer content.
     ///
     /// # Panics
     ///
     /// Panics if `source.len() != self.len()`
-    async fn copy<Format>(
-        &mut self,
-        area: &Rectangle,
-        source: &[Format::Repr],
-        blend: bool,
-    ) where
-        Format: format::Format;
+    async fn copy(&mut self, area: &Rectangle, source: &[F::Repr], blend: bool);
 
     /// Copy the source grayscale image blended with a color
     /// into this framebuffer,
@@ -46,21 +45,21 @@ pub trait Accelerated: DrawTarget<Color = Argb8888, Error = Infallible> {
     /// # Panics
     ///
     /// Panics if `source.len() != self.len()`
-    async fn copy_with_color<Format>(
+    async fn copy_with_color(
         &mut self,
         area: &Rectangle,
-        source: &[Format::Repr],
+        source: &[F::Repr],
         color: Argb8888,
         blend: bool,
     ) where
-        Format: format::Grayscale;
+        F: Grayscale;
 }
 
 /// A trait for drawable elements.
 #[allow(async_fn_in_trait)]
-pub trait Drawable: embedded_graphics::prelude::Dimensions {
+pub trait Drawable<F: Format>: embedded_graphics::prelude::Dimensions {
     /// Draw `self` onto the active framebuffer layer.
-    async fn draw(&self, framebuffer: &mut impl Accelerated, layer: usize);
+    async fn draw(&self, framebuffer: &mut impl Accelerated<F>, layer: usize);
 }
 
 /// Horizontal alignment

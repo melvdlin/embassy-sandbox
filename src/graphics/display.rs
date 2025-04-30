@@ -29,6 +29,9 @@ pub use otm8009a::WIDTH;
 
 use super::accelerated::Framebuffer;
 use super::color::Argb8888;
+use super::color::Format;
+use super::color::Grayscale;
+use super::gui::AcceleratedBase;
 use super::gui::Accelerated;
 use crate::util::typelevel::MapOnce;
 
@@ -228,13 +231,14 @@ where
     }
 
     pub async fn copy_from_front(&mut self) {
-        self.back
-            .copy::<dma2d::format::typelevel::Argb8888>(
-                &self.bounding_box(),
-                bytemuck::must_cast_slice(self.front.as_mut()),
-                false,
-            )
-            .await
+        let bounds = self.bounding_box();
+        Accelerated::<dma2d::format::typelevel::Argb8888>::copy(
+            &mut self.back,
+            &bounds,
+            bytemuck::must_cast_slice(self.front.as_mut()),
+            false,
+        )
+        .await
     }
 }
 
@@ -283,9 +287,9 @@ where
     }
 }
 
-impl<B, D, L> Accelerated for DoubleBuffer<B, D, L>
+impl<B, D, L> AcceleratedBase for DoubleBuffer<B, D, L>
 where
-    Framebuffer<B, D>: Accelerated,
+    Framebuffer<B, D>: AcceleratedBase,
 {
     async fn fill_rect(
         &mut self,
@@ -294,27 +298,31 @@ where
     ) {
         self.back.fill_rect(area, color).await
     }
+}
 
-    async fn copy<Format>(
+impl<F, B, D, L> Accelerated<F> for DoubleBuffer<B, D, L>
+where
+    F: Format,
+    Framebuffer<B, D>: Accelerated<F>,
+{
+    async fn copy(
         &mut self,
         area: &embedded_graphics::primitives::Rectangle,
-        source: &[Format::Repr],
+        source: &[F::Repr],
         blend: bool,
-    ) where
-        Format: super::gui::format::Format,
-    {
-        self.back.copy::<Format>(area, source, blend).await
+    ) {
+        self.back.copy(area, source, blend).await
     }
 
-    async fn copy_with_color<Format>(
+    async fn copy_with_color(
         &mut self,
         area: &embedded_graphics::primitives::Rectangle,
-        source: &[Format::Repr],
+        source: &[F::Repr],
         color: Argb8888,
         blend: bool,
     ) where
-        Format: super::gui::format::Grayscale,
+        F: Grayscale,
     {
-        self.back.copy_with_color::<Format>(area, source, color, blend).await
+        self.back.copy_with_color(area, source, color, blend).await
     }
 }

@@ -12,11 +12,10 @@ use embassy_stm32::pac::dma2d::vals;
 use embassy_stm32::peripherals;
 use embassy_stm32::rcc;
 use embassy_sync::waitqueue::AtomicWaker;
-use format::typelevel::Format;
-use format::typelevel::Grayscale;
 use format::typelevel::Rgb;
 
 use crate::graphics::color::Argb8888;
+use crate::graphics::color::Grayscale;
 
 pub type Peripheral = peripherals::DMA2D;
 type PacDma2d = pac::dma2d::Dma2d;
@@ -43,6 +42,8 @@ bitflags::bitflags! {
         const CONFIG_ERROR = 1 << 5;
     }
 }
+
+pub use format::typelevel::Format;
 
 pub mod format {
     use embassy_stm32::pac::dma2d::vals;
@@ -206,20 +207,17 @@ pub mod format {
     }
 
     pub mod typelevel {
+        use crate::graphics::color::Alpha;
+        use crate::graphics::color::Grayscale;
 
         pub trait Rgb: Format {
             const FORMAT: super::Rgb;
         }
 
-        pub trait Format {
-            type Repr: bytemuck::Pod;
+        pub trait Format: crate::graphics::color::Format {
             const FORMAT: super::Format;
-
             const LEN_ALIGN: usize = Self::FORMAT.len_alignment();
         }
-
-        pub trait Grayscale: Format {}
-        pub trait Alpha: Format {}
 
         macro_rules! rgb_color {
             ($id:ident, $repr:ty) => {
@@ -230,14 +228,17 @@ pub mod format {
                 #[derive(Default)]
                 pub struct $id;
 
-                impl Rgb for $id {
-                    const FORMAT: super::Rgb = super::Rgb::$id;
+                impl crate::graphics::color::Format for $id {
+                    type Repr = $repr;
                 }
 
                 impl Format for $id {
-                    type Repr = $repr;
                     const FORMAT: super::Format =
                         super::Format::Rgb(<Self as Rgb>::FORMAT);
+                }
+
+                impl Rgb for $id {
+                    const FORMAT: super::Rgb = super::Rgb::$id;
                 }
             };
         }
@@ -250,8 +251,12 @@ pub mod format {
                 #[derive(Hash)]
                 #[derive(Default)]
                 pub struct $id;
-                impl Format for $id {
+
+                impl crate::graphics::color::Format for $id {
                     type Repr = $repr;
+                }
+
+                impl Format for $id {
                     const FORMAT: super::Format = super::Format::$id;
                 }
             };
@@ -884,7 +889,7 @@ where
 
 impl<F> InputConfig<'_, F>
 where
-    F: Grayscale,
+    F: format::typelevel::Format + Grayscale,
 {
     pub const fn blend_color(self, color: Argb8888) -> Self {
         Self {
@@ -900,7 +905,7 @@ where
 
 impl<'a> InputConfig<'a, format::typelevel::Argb8888> {
     pub const fn argb(
-        source: &'a [<format::typelevel::Argb8888 as format::typelevel::Format>::Repr],
+        source: &'a [<format::typelevel::Argb8888 as crate::graphics::color::Format>::Repr],
         offset: u16,
     ) -> Self {
         Self {
@@ -914,7 +919,7 @@ impl<'a> InputConfig<'a, format::typelevel::Argb8888> {
 
 impl<'a> InputConfig<'a, format::typelevel::Rgb888> {
     pub const fn rgb(
-        source: &'a [<format::typelevel::Rgb888 as format::typelevel::Format>::Repr],
+        source: &'a [<format::typelevel::Rgb888 as crate::graphics::color::Format>::Repr],
         offset: u16,
     ) -> Self {
         Self {

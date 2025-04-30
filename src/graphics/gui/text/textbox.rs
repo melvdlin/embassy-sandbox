@@ -9,12 +9,12 @@ use itertools::Either;
 
 use super::CharMap;
 use crate::graphics::color::Argb8888;
+use crate::graphics::color::Grayscale;
 use crate::graphics::gui::Accelerated;
 use crate::graphics::gui::Alignment;
 use crate::graphics::gui::Drawable;
 use crate::graphics::gui::HAlignment;
 use crate::graphics::gui::VAlignment;
-use crate::graphics::gui::format::Grayscale;
 
 // TODO: add alignment support
 #[derive(Debug)]
@@ -419,13 +419,13 @@ where
     }
 }
 
-impl<C, S> Drawable for TextBox<C, S>
+impl<C, S> Drawable<C::Format> for TextBox<C, S>
 where
     C: CharMap,
     C::Format: Grayscale,
     S: AsRef<str>,
 {
-    async fn draw(&self, framebuffer: &mut impl Accelerated, layer: usize) {
+    async fn draw(&self, framebuffer: &mut impl Accelerated<C::Format>, layer: usize) {
         if layer != self.layer {
             return;
         }
@@ -448,7 +448,7 @@ where
             let char = char_map.char(char).unwrap_or(char_map.fallback());
 
             framebuffer
-                .copy_with_color::<C::Format>(
+                .copy_with_color(
                     &Rectangle::new(position, char_map.char_size()),
                     char,
                     self.color,

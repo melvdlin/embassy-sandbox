@@ -15,12 +15,14 @@ use embedded_graphics::prelude::Size;
 use embedded_graphics::primitives::Rectangle;
 
 use super::color::Argb8888;
+use super::color::Grayscale;
 use super::display::dma2d;
 use super::display::dma2d::Dma2d;
 use super::display::dma2d::InputConfig;
 use super::display::dma2d::OutputConfig;
 use super::display::dma2d::format::typelevel as format;
 use super::gui::Accelerated;
+use super::gui::AcceleratedBase;
 
 #[cfg(not(target_pointer_width = "32"))]
 compile_error!("targets with pointer width other than 32 not supported");
@@ -106,7 +108,7 @@ where
 
     /// Create a new framebuffer borrowing `self` as backing buffer
     /// and using the provided DMA accelerator.
-    pub fn with_dma<'buf, D>(&'buf mut self, dma: D) -> Framebuffer<&'buf mut B, D> {
+    pub fn with_dma<D>(&mut self, dma: D) -> Framebuffer<&mut B, D> {
         Framebuffer::new(&mut self.buf, self.width, self.height, dma)
     }
 }
@@ -159,8 +161,22 @@ where
     }
 }
 
-impl<B, D> Accelerated for Framebuffer<B, D>
+impl<B, D> AcceleratedBase for Framebuffer<B, D>
 where
+    B: AsMut<[Argb8888]>,
+    D: BorrowMut<Dma2d>,
+{
+    /// Draw a rectangle in the speicifed color.
+    async fn fill_rect(&mut self, area: &Rectangle, color: Argb8888) {
+        let (out_cfg, range) = self.output_cfg(area);
+        let buf = bytemuck::must_cast_slice_mut(&mut self.buf.as_mut()[range]);
+        self.dma.borrow_mut().fill::<format::Argb8888>(buf, &out_cfg, color).await
+    }
+}
+
+impl<F, B, D> Accelerated<F> for Framebuffer<B, D>
+where
+    F: dma2d::Format,
     B: AsMut<[Argb8888]>,
     D: BorrowMut<Dma2d>,
 {
@@ -169,27 +185,20 @@ where
     /// # Panics
     ///
     /// Panics if `source.len() != self.len()`
-    async fn copy<Format>(
-        &mut self,
-        area: &Rectangle,
-        source: &[Format::Repr],
-        blend: bool,
-    ) where
-        Format: format::Format,
-    {
+    async fn copy(&mut self, area: &Rectangle, source: &[F::Repr], blend: bool) {
         let (out_cfg, range) = self.output_cfg(area);
         let buf = bytemuck::must_cast_slice_mut(&mut self.buf.as_mut()[range]);
-        let fg = InputConfig::<Format>::copy(source, 0);
+        let fg = InputConfig::<F>::copy(source, 0);
 
         if blend {
             self.dma
                 .borrow_mut()
-                .transfer_onto::<format::Argb8888, Format>(buf, &out_cfg, &fg, None)
+                .transfer_onto::<format::Argb8888, F>(buf, &out_cfg, &fg, None)
                 .await
         } else {
             self.dma
                 .borrow_mut()
-                .transfer_memory::<format::Argb8888, Format>(buf, &out_cfg, &fg)
+                .transfer_memory::<format::Argb8888, F>(buf, &out_cfg, &fg)
                 .await
         }
     }
@@ -200,37 +209,30 @@ where
     /// # Panics
     ///
     /// Panics if `source.len() != self.len()`
-    async fn copy_with_color<Format>(
+    async fn copy_with_color(
         &mut self,
         area: &Rectangle,
-        source: &[Format::Repr],
+        source: &[F::Repr],
         color: Argb8888,
         blend: bool,
     ) where
-        Format: format::Grayscale,
+        F: Grayscale,
     {
         let (out_cfg, range) = self.output_cfg(area);
         let buf = bytemuck::must_cast_slice_mut(&mut self.buf.as_mut()[range]);
-        let fg = InputConfig::<Format>::copy(source, 0).blend_color(color);
+        let fg = InputConfig::<F>::copy(source, 0).blend_color(color);
 
         if blend {
             self.dma
                 .borrow_mut()
-                .transfer_onto::<format::Argb8888, Format>(buf, &out_cfg, &fg, None)
+                .transfer_onto::<format::Argb8888, F>(buf, &out_cfg, &fg, None)
                 .await
         } else {
             self.dma
                 .borrow_mut()
-                .transfer_memory::<format::Argb8888, Format>(buf, &out_cfg, &fg)
+                .transfer_memory::<format::Argb8888, F>(buf, &out_cfg, &fg)
                 .await
         }
-    }
-
-    /// Draw a rectangle in the speicifed color.
-    async fn fill_rect(&mut self, area: &Rectangle, color: Argb8888) {
-        let (out_cfg, range) = self.output_cfg(area);
-        let buf = bytemuck::must_cast_slice_mut(&mut self.buf.as_mut()[range]);
-        self.dma.borrow_mut().fill::<format::Argb8888>(buf, &out_cfg, color).await
     }
 }
 

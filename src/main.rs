@@ -21,7 +21,7 @@ use embassy_sandbox::graphics::color::Argb8888;
 use embassy_sandbox::graphics::display;
 use embassy_sandbox::graphics::display::DoubleBuffer;
 use embassy_sandbox::graphics::display::LayerConfig;
-use embassy_sandbox::graphics::gui::Accelerated;
+use embassy_sandbox::graphics::gui::AcceleratedBase;
 use embassy_sandbox::graphics::gui::Alignment;
 use embassy_sandbox::graphics::gui::Drawable;
 use embassy_sandbox::graphics::gui::ext::AcceleratedExt;

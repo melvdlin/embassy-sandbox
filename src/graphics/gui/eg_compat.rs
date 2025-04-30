@@ -12,11 +12,12 @@ use embedded_graphics::primitives::Sector;
 use super::Accelerated;
 use super::Drawable;
 use crate::graphics::color::Argb8888;
+use crate::graphics::color::Format;
 
-impl Drawable
+impl<F: Format> Drawable<F>
     for embedded_graphics::primitives::Styled<Rectangle, PrimitiveStyle<Argb8888>>
 {
-    async fn draw(&self, framebuffer: &mut impl Accelerated, _layer: usize) {
+    async fn draw(&self, framebuffer: &mut impl Accelerated<F>, _layer: usize) {
         if let Some(fill) = self.style.fill_color {
             framebuffer.fill_rect(&self.primitive, fill).await;
         }
@@ -37,46 +38,50 @@ impl Drawable
     }
 }
 
-impl Drawable
+impl<F: Format> Drawable<F>
     for embedded_graphics::primitives::Styled<Circle, PrimitiveStyle<Argb8888>>
 {
-    async fn draw(&self, framebuffer: &mut impl Accelerated, _layer: usize) {
+    async fn draw(&self, framebuffer: &mut impl Accelerated<F>, _layer: usize) {
         Ok(()) = <Self as EgDrawable>::draw(self, framebuffer);
     }
 }
 
-impl Drawable
+impl<F: Format> Drawable<F>
     for embedded_graphics::primitives::Styled<Ellipse, PrimitiveStyle<Argb8888>>
 {
-    async fn draw(&self, framebuffer: &mut impl Accelerated, _layer: usize) {
+    async fn draw(&self, framebuffer: &mut impl Accelerated<F>, _layer: usize) {
         Ok(()) = <Self as EgDrawable>::draw(self, framebuffer);
     }
 }
 
-impl Drawable
+impl<F: Format> Drawable<F>
     for embedded_graphics::primitives::Styled<Sector, PrimitiveStyle<Argb8888>>
 {
-    async fn draw(&self, framebuffer: &mut impl Accelerated, _layer: usize) {
+    async fn draw(&self, framebuffer: &mut impl Accelerated<F>, _layer: usize) {
         Ok(()) = <Self as EgDrawable>::draw(self, framebuffer);
     }
 }
 
-impl Drawable for embedded_graphics::primitives::Styled<Arc, PrimitiveStyle<Argb8888>> {
-    async fn draw(&self, framebuffer: &mut impl Accelerated, _layer: usize) {
+impl<F: Format> Drawable<F>
+    for embedded_graphics::primitives::Styled<Arc, PrimitiveStyle<Argb8888>>
+{
+    async fn draw(&self, framebuffer: &mut impl Accelerated<F>, _layer: usize) {
         Ok(()) = <Self as EgDrawable>::draw(self, framebuffer);
     }
 }
 
-impl Drawable
+impl<F: Format> Drawable<F>
     for embedded_graphics::primitives::Styled<Polyline<'_>, PrimitiveStyle<Argb8888>>
 {
-    async fn draw(&self, framebuffer: &mut impl Accelerated, _layer: usize) {
+    async fn draw(&self, framebuffer: &mut impl Accelerated<F>, _layer: usize) {
         Ok(()) = <Self as EgDrawable>::draw(self, framebuffer);
     }
 }
 
-impl Drawable for embedded_graphics::primitives::Styled<Line, PrimitiveStyle<Argb8888>> {
-    async fn draw(&self, framebuffer: &mut impl Accelerated, _layer: usize) {
+impl<F: Format> Drawable<F>
+    for embedded_graphics::primitives::Styled<Line, PrimitiveStyle<Argb8888>>
+{
+    async fn draw(&self, framebuffer: &mut impl Accelerated<F>, _layer: usize) {
         if self.primitive.delta().y == 0 {
             let Some(stroke) = self.style.stroke_color else {
                 return;

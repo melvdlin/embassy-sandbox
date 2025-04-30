@@ -6,12 +6,12 @@ use core::ops::Range;
 use embedded_graphics::prelude::Size;
 
 use super::Repr;
-use super::format;
+use crate::graphics::color::Format;
 
 /// A trait for mapping ascii characters to a corresponding image.
 pub trait CharMap {
     /// The pixel format.
-    type Format: format::Format;
+    type Format: Format;
     /// The pixel dimensions of a single char.
     fn char_size(&self) -> Size;
     /// Get the image of a character, if the character is supported.
@@ -45,7 +45,7 @@ where
 
 pub struct CharRangeMap<'a, F>
 where
-    F: format::Format,
+    F: Format,
 {
     range: Range<u32>,
     width: u16,
@@ -56,7 +56,7 @@ where
 
 impl<'a, F> CharRangeMap<'a, F>
 where
-    F: format::Format,
+    F: Format,
 {
     /// Create a new ascii char map.
     ///
@@ -97,7 +97,7 @@ where
 
 impl<F> CharMap for CharRangeMap<'_, F>
 where
-    F: format::Format,
+    F: Format,
 {
     type Format = F;
 
