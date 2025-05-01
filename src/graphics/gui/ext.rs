@@ -3,9 +3,9 @@ use embedded_graphics::primitives::Rectangle;
 
 use super::Accelerated;
 use super::AcceleratedBase;
+use crate::graphics::color::AlphaColor;
 use crate::graphics::color::Argb8888;
-use crate::graphics::color::Format;
-use crate::graphics::color::Grayscale;
+use crate::graphics::color::Storage;
 
 pub trait AcceleratedExt {
     fn translated(&mut self, offset: Point) -> Translated<'_, Self>;
@@ -102,21 +102,21 @@ where
 
 impl<F, A> Accelerated<F> for Translated<'_, A>
 where
-    F: Format,
+    F: PixelColor,
     A: Accelerated<F>,
 {
-    async fn copy(&mut self, area: &Rectangle, source: &[F::Repr], blend: bool) {
+    async fn copy(&mut self, area: &Rectangle, source: &[Storage<F>], blend: bool) {
         self.surface.copy(&area.translate(self.offset), source, blend).await
     }
 
     async fn copy_with_color(
         &mut self,
         area: &Rectangle,
-        source: &[F::Repr],
+        source: &[Storage<F>],
         color: Argb8888,
         blend: bool,
     ) where
-        F: Grayscale,
+        F: AlphaColor,
     {
         self.surface
             .copy_with_color(&area.translate(self.offset), source, color, blend)

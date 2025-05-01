@@ -14,13 +14,13 @@ use embedded_graphics::prelude::Point;
 use embedded_graphics::prelude::Size;
 use embedded_graphics::primitives::Rectangle;
 
+use super::color::AlphaColor;
 use super::color::Argb8888;
-use super::color::Grayscale;
+use super::color::Storage;
 use super::display::dma2d;
 use super::display::dma2d::Dma2d;
 use super::display::dma2d::InputConfig;
 use super::display::dma2d::OutputConfig;
-use super::display::dma2d::format::typelevel as format;
 use super::gui::Accelerated;
 use super::gui::AcceleratedBase;
 
@@ -170,7 +170,7 @@ where
     async fn fill_rect(&mut self, area: &Rectangle, color: Argb8888) {
         let (out_cfg, range) = self.output_cfg(area);
         let buf = bytemuck::must_cast_slice_mut(&mut self.buf.as_mut()[range]);
-        self.dma.borrow_mut().fill::<format::Argb8888>(buf, &out_cfg, color).await
+        self.dma.borrow_mut().fill::<Argb8888>(buf, &out_cfg, color).await
     }
 }
 
@@ -185,7 +185,7 @@ where
     /// # Panics
     ///
     /// Panics if `source.len() != self.len()`
-    async fn copy(&mut self, area: &Rectangle, source: &[F::Repr], blend: bool) {
+    async fn copy(&mut self, area: &Rectangle, source: &[Storage<F>], blend: bool) {
         let (out_cfg, range) = self.output_cfg(area);
         let buf = bytemuck::must_cast_slice_mut(&mut self.buf.as_mut()[range]);
         let fg = InputConfig::<F>::copy(source, 0);
@@ -193,17 +193,14 @@ where
         if blend {
             self.dma
                 .borrow_mut()
-                .transfer_onto::<format::Argb8888, F>(buf, &out_cfg, &fg, None)
+                .transfer_onto::<Argb8888, F>(buf, &out_cfg, &fg, None)
                 .await
         } else {
-            self.dma
-                .borrow_mut()
-                .transfer_memory::<format::Argb8888, F>(buf, &out_cfg, &fg)
-                .await
+            self.dma.borrow_mut().transfer_memory::<Argb8888, F>(buf, &out_cfg, &fg).await
         }
     }
 
-    /// Copy the source grayscale image blended with a color
+    /// Copy the source opacity image blended with a color
     /// into this framebuffer.
     ///
     /// # Panics
@@ -212,11 +209,11 @@ where
     async fn copy_with_color(
         &mut self,
         area: &Rectangle,
-        source: &[F::Repr],
+        source: &[Storage<F>],
         color: Argb8888,
         blend: bool,
     ) where
-        F: Grayscale,
+        F: AlphaColor,
     {
         let (out_cfg, range) = self.output_cfg(area);
         let buf = bytemuck::must_cast_slice_mut(&mut self.buf.as_mut()[range]);
@@ -225,13 +222,10 @@ where
         if blend {
             self.dma
                 .borrow_mut()
-                .transfer_onto::<format::Argb8888, F>(buf, &out_cfg, &fg, None)
+                .transfer_onto::<Argb8888, F>(buf, &out_cfg, &fg, None)
                 .await
         } else {
-            self.dma
-                .borrow_mut()
-                .transfer_memory::<format::Argb8888, F>(buf, &out_cfg, &fg)
-                .await
+            self.dma.borrow_mut().transfer_memory::<Argb8888, F>(buf, &out_cfg, &fg).await
         }
     }
 }
@@ -313,7 +307,7 @@ where
         let (range, offset) = self.range_and_offset(&area);
         let width = area.size.width as u16;
         let height = area.size.height as u16;
-        self.dma.borrow_mut().fill_blocking::<format::Argb8888>(
+        self.dma.borrow_mut().fill_blocking::<Argb8888>(
             bytemuck::must_cast_slice_mut(&mut self.buf.as_mut()[range]),
             &OutputConfig::new(width, height, offset),
             color,

@@ -173,7 +173,7 @@ async fn _main(spawner: Spawner) -> ! {
         height: display_config.rows.get(),
         pixel_format: embassy_stm32::ltdc::PixelFormat::ARGB8888,
         alpha: 0xFF,
-        default_color: Argb8888::from_u32(0x00000000),
+        default_color: Argb8888::from_storage(0x00000000),
     };
     let (mut disp, typelevel::Some(layer0), typelevel::None) = display::Display::init(
         p.DSIHOST,

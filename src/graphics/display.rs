@@ -16,6 +16,7 @@ pub use dsi::InterruptHandler as DsiInterruptHandler;
 use embedded_graphics::prelude::Dimensions;
 use embedded_graphics::prelude::DrawTarget;
 use embedded_graphics::prelude::OriginDimensions;
+use embedded_graphics::prelude::PixelColor;
 use embedded_graphics::prelude::Size;
 pub use ltdc::ErrorInterruptHandler as LtdcErrorInterruptHandler;
 pub use ltdc::InterruptHandler as LtdcInterruptHandler;
@@ -28,11 +29,11 @@ pub use otm8009a::Orientation;
 pub use otm8009a::WIDTH;
 
 use super::accelerated::Framebuffer;
+use super::color::AlphaColor;
 use super::color::Argb8888;
-use super::color::Format;
-use super::color::Grayscale;
-use super::gui::AcceleratedBase;
+use super::color::Storage;
 use super::gui::Accelerated;
+use super::gui::AcceleratedBase;
 use crate::util::typelevel::MapOnce;
 
 pub struct Display<'a> {
@@ -232,7 +233,7 @@ where
 
     pub async fn copy_from_front(&mut self) {
         let bounds = self.bounding_box();
-        Accelerated::<dma2d::format::typelevel::Argb8888>::copy(
+        Accelerated::<Argb8888>::copy(
             &mut self.back,
             &bounds,
             bytemuck::must_cast_slice(self.front.as_mut()),
@@ -302,13 +303,13 @@ where
 
 impl<F, B, D, L> Accelerated<F> for DoubleBuffer<B, D, L>
 where
-    F: Format,
+    F: PixelColor,
     Framebuffer<B, D>: Accelerated<F>,
 {
     async fn copy(
         &mut self,
         area: &embedded_graphics::primitives::Rectangle,
-        source: &[F::Repr],
+        source: &[Storage<F>],
         blend: bool,
     ) {
         self.back.copy(area, source, blend).await
@@ -317,11 +318,11 @@ where
     async fn copy_with_color(
         &mut self,
         area: &embedded_graphics::primitives::Rectangle,
-        source: &[F::Repr],
+        source: &[Storage<F>],
         color: Argb8888,
         blend: bool,
     ) where
-        F: Grayscale,
+        F: AlphaColor,
     {
         self.back.copy_with_color(area, source, color, blend).await
     }

@@ -1,7 +1,7 @@
 use core::ops::Range;
 
 use super::CharRangeMap;
-use crate::graphics::gui::format::A8;
+use crate::graphics::color::A8;
 
 // TODO: support entire ascii range
 pub static FIRA_MONO_16: CharRangeMap<'static, A8> =

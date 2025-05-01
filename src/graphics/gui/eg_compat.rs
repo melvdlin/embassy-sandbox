@@ -1,5 +1,6 @@
 use embedded_graphics::prelude::Dimensions;
 use embedded_graphics::prelude::Drawable as EgDrawable;
+use embedded_graphics::prelude::PixelColor;
 use embedded_graphics::primitives::Arc;
 use embedded_graphics::primitives::Circle;
 use embedded_graphics::primitives::Ellipse;
@@ -12,9 +13,8 @@ use embedded_graphics::primitives::Sector;
 use super::Accelerated;
 use super::Drawable;
 use crate::graphics::color::Argb8888;
-use crate::graphics::color::Format;
 
-impl<F: Format> Drawable<F>
+impl<F: PixelColor> Drawable<F>
     for embedded_graphics::primitives::Styled<Rectangle, PrimitiveStyle<Argb8888>>
 {
     async fn draw(&self, framebuffer: &mut impl Accelerated<F>, _layer: usize) {
@@ -38,7 +38,7 @@ impl<F: Format> Drawable<F>
     }
 }
 
-impl<F: Format> Drawable<F>
+impl<F: PixelColor> Drawable<F>
     for embedded_graphics::primitives::Styled<Circle, PrimitiveStyle<Argb8888>>
 {
     async fn draw(&self, framebuffer: &mut impl Accelerated<F>, _layer: usize) {
@@ -46,7 +46,7 @@ impl<F: Format> Drawable<F>
     }
 }
 
-impl<F: Format> Drawable<F>
+impl<F: PixelColor> Drawable<F>
     for embedded_graphics::primitives::Styled<Ellipse, PrimitiveStyle<Argb8888>>
 {
     async fn draw(&self, framebuffer: &mut impl Accelerated<F>, _layer: usize) {
@@ -54,7 +54,7 @@ impl<F: Format> Drawable<F>
     }
 }
 
-impl<F: Format> Drawable<F>
+impl<F: PixelColor> Drawable<F>
     for embedded_graphics::primitives::Styled<Sector, PrimitiveStyle<Argb8888>>
 {
     async fn draw(&self, framebuffer: &mut impl Accelerated<F>, _layer: usize) {
@@ -62,7 +62,7 @@ impl<F: Format> Drawable<F>
     }
 }
 
-impl<F: Format> Drawable<F>
+impl<F: PixelColor> Drawable<F>
     for embedded_graphics::primitives::Styled<Arc, PrimitiveStyle<Argb8888>>
 {
     async fn draw(&self, framebuffer: &mut impl Accelerated<F>, _layer: usize) {
@@ -70,7 +70,7 @@ impl<F: Format> Drawable<F>
     }
 }
 
-impl<F: Format> Drawable<F>
+impl<F: PixelColor> Drawable<F>
     for embedded_graphics::primitives::Styled<Polyline<'_>, PrimitiveStyle<Argb8888>>
 {
     async fn draw(&self, framebuffer: &mut impl Accelerated<F>, _layer: usize) {
@@ -78,7 +78,7 @@ impl<F: Format> Drawable<F>
     }
 }
 
-impl<F: Format> Drawable<F>
+impl<F: PixelColor> Drawable<F>
     for embedded_graphics::primitives::Styled<Line, PrimitiveStyle<Argb8888>>
 {
     async fn draw(&self, framebuffer: &mut impl Accelerated<F>, _layer: usize) {

@@ -3,25 +3,25 @@ pub mod textbox;
 
 use core::ops::Range;
 
+use embedded_graphics::prelude::PixelColor;
 use embedded_graphics::prelude::Size;
 
-use super::Repr;
-use crate::graphics::color::Format;
+use crate::graphics::color::Storage;
 
 /// A trait for mapping ascii characters to a corresponding image.
 pub trait CharMap {
     /// The pixel format.
-    type Format: Format;
+    type Format: PixelColor;
     /// The pixel dimensions of a single char.
     fn char_size(&self) -> Size;
     /// Get the image of a character, if the character is supported.
     ///
     /// This image must have the dimensions specified in [`AsciiMap::char_dimensions`].
-    fn char(&self, char: char) -> Option<&[Repr<Self::Format>]>;
+    fn char(&self, char: char) -> Option<&[Storage<Self::Format>]>;
     /// Get the fallback character image.
     ///
     /// This image must have the dimensions specified by [`AsciiMap::char_dimensions`].
-    fn fallback(&self) -> &[Repr<Self::Format>];
+    fn fallback(&self) -> &[Storage<Self::Format>];
 }
 
 impl<T> CharMap for &T
@@ -34,29 +34,29 @@ where
         (*self).char_size()
     }
 
-    fn char(&self, char: char) -> Option<&[Repr<Self::Format>]> {
+    fn char(&self, char: char) -> Option<&[Storage<Self::Format>]> {
         (*self).char(char)
     }
 
-    fn fallback(&self) -> &[Repr<Self::Format>] {
+    fn fallback(&self) -> &[Storage<Self::Format>] {
         (*self).fallback()
     }
 }
 
 pub struct CharRangeMap<'a, F>
 where
-    F: Format,
+    F: PixelColor,
 {
     range: Range<u32>,
     width: u16,
     height: u16,
-    chars: &'a [Repr<F>],
-    fallback: &'a [Repr<F>],
+    chars: &'a [Storage<F>],
+    fallback: &'a [Storage<F>],
 }
 
 impl<'a, F> CharRangeMap<'a, F>
 where
-    F: Format,
+    F: PixelColor,
 {
     /// Create a new ascii char map.
     ///
@@ -71,8 +71,8 @@ where
         codepoints: Range<u32>,
         width: u16,
         height: u16,
-        chars: &'a [Repr<F>],
-        fallback: &'a [Repr<F>],
+        chars: &'a [Storage<F>],
+        fallback: &'a [Storage<F>],
     ) -> Self {
         // FIXME: change to `assert_eq` once supported in const
         // FIXME: change to `try_from().expect()` once supported in const
@@ -97,7 +97,7 @@ where
 
 impl<F> CharMap for CharRangeMap<'_, F>
 where
-    F: Format,
+    F: PixelColor,
 {
     type Format = F;
 
@@ -108,7 +108,7 @@ where
         }
     }
 
-    fn char(&self, char: char) -> Option<&[Repr<Self::Format>]> {
+    fn char(&self, char: char) -> Option<&[Storage<Self::Format>]> {
         let codepoint = u32::from(char);
         if !self.range.contains(&codepoint) {
             return None;
@@ -120,7 +120,7 @@ where
         Some(&self.chars[start..end])
     }
 
-    fn fallback(&self) -> &[Repr<Self::Format>] {
+    fn fallback(&self) -> &[Storage<Self::Format>] {
         self.fallback
     }
 }

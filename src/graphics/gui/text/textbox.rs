@@ -8,8 +8,8 @@ use embedded_graphics::primitives::Rectangle;
 use itertools::Either;
 
 use super::CharMap;
+use crate::graphics::color::AlphaColor;
 use crate::graphics::color::Argb8888;
-use crate::graphics::color::Grayscale;
 use crate::graphics::gui::Accelerated;
 use crate::graphics::gui::Alignment;
 use crate::graphics::gui::Drawable;
@@ -422,7 +422,7 @@ where
 impl<C, S> Drawable<C::Format> for TextBox<C, S>
 where
     C: CharMap,
-    C::Format: Grayscale,
+    C::Format: AlphaColor,
     S: AsRef<str>,
 {
     async fn draw(&self, framebuffer: &mut impl Accelerated<C::Format>, layer: usize) {

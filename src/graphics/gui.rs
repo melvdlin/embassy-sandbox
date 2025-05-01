@@ -10,15 +10,13 @@ use core::ops::BitOrAssign;
 
 use embedded_graphics::prelude::Dimensions;
 use embedded_graphics::prelude::DrawTarget;
+use embedded_graphics::prelude::PixelColor;
 use embedded_graphics::prelude::Point;
 use embedded_graphics::primitives::Rectangle;
 
+use super::color::AlphaColor;
 use super::color::Argb8888;
-use super::color::Format;
-use super::color::Grayscale;
-pub use super::display::dma2d::format::typelevel as format;
-
-type Repr<F> = <F as Format>::Repr;
+use super::color::Storage;
 
 /// A trait for draw targets with accelerated primitives.
 #[allow(async_fn_in_trait)]
@@ -29,16 +27,16 @@ pub trait AcceleratedBase: DrawTarget<Color = Argb8888, Error = Infallible> {
 
 /// A trait for draw targets with hardware accelerated copying.
 #[allow(async_fn_in_trait)]
-pub trait Accelerated<F: Format>: AcceleratedBase {
+pub trait Accelerated<F: PixelColor>: AcceleratedBase {
     /// Copy the source image into this framebuffer,
     /// optionally blending it with the current framebuffer content.
     ///
     /// # Panics
     ///
     /// Panics if `source.len() != self.len()`
-    async fn copy(&mut self, area: &Rectangle, source: &[F::Repr], blend: bool);
+    async fn copy(&mut self, area: &Rectangle, source: &[Storage<F>], blend: bool);
 
-    /// Copy the source grayscale image blended with a color
+    /// Copy the source opacity image blended with a color
     /// into this framebuffer,
     /// optionally blending it with the current framebuffer content.
     ///
@@ -48,16 +46,16 @@ pub trait Accelerated<F: Format>: AcceleratedBase {
     async fn copy_with_color(
         &mut self,
         area: &Rectangle,
-        source: &[F::Repr],
+        source: &[Storage<F>],
         color: Argb8888,
         blend: bool,
     ) where
-        F: Grayscale;
+        F: AlphaColor;
 }
 
 /// A trait for drawable elements.
 #[allow(async_fn_in_trait)]
-pub trait Drawable<F: Format>: embedded_graphics::prelude::Dimensions {
+pub trait Drawable<F: PixelColor>: embedded_graphics::prelude::Dimensions {
     /// Draw `self` onto the active framebuffer layer.
     async fn draw(&self, framebuffer: &mut impl Accelerated<F>, layer: usize);
 }

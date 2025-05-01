@@ -1,4 +1,6 @@
+use core::fmt::Debug;
 use core::future::poll_fn;
+use core::hash::Hash;
 use core::mem;
 use core::sync::atomic::Ordering;
 use core::sync::atomic::fence;
@@ -12,10 +14,13 @@ use embassy_stm32::pac::dma2d::vals;
 use embassy_stm32::peripherals;
 use embassy_stm32::rcc;
 use embassy_sync::waitqueue::AtomicWaker;
+use embedded_graphics::pixelcolor::Rgb888;
+use embedded_graphics::prelude::RgbColor;
 use format::typelevel::Rgb;
 
+use crate::graphics::color::AlphaColor;
 use crate::graphics::color::Argb8888;
-use crate::graphics::color::Grayscale;
+use crate::graphics::color::Storage;
 
 pub type Peripheral = peripherals::DMA2D;
 type PacDma2d = pac::dma2d::Dma2d;
@@ -90,58 +95,6 @@ pub mod format {
         }
     }
 
-    impl Format {
-        pub const fn alignment(self) -> usize {
-            match self {
-                | Format::Rgb(rgb) => rgb.alignment(),
-                | Format::L8 => 1,
-                | Format::AL44 => 1,
-                | Format::AL88 => 2,
-                | Format::L4 => 1,
-                | Format::A8 => 1,
-                | Format::A4 => 1,
-            }
-        }
-
-        pub const fn len_alignment(self) -> usize {
-            match self {
-                | Format::Rgb(rgb) => rgb.len_alignment(),
-                | Format::L8 => 1,
-                | Format::AL44 => 1,
-                | Format::AL88 => 1,
-                | Format::L4 => 2,
-                | Format::A8 => 1,
-                | Format::A4 => 2,
-            }
-        }
-    }
-
-    impl Rgb {
-        pub const fn alignment(self) -> usize {
-            match self {
-                | Rgb::Argb8888 => 4,
-                | Rgb::Rgb888 => 4,
-                | Rgb::Rgb565 => 2,
-                | Rgb::Argb1555 => 2,
-                | Rgb::Argb4444 => 2,
-            }
-        }
-
-        pub const fn len_alignment(self) -> usize {
-            1
-        }
-
-        pub const fn size(self) -> usize {
-            match self {
-                | Rgb::Argb8888 => 4,
-                | Rgb::Rgb888 => 3,
-                | Rgb::Rgb565 => 2,
-                | Rgb::Argb1555 => 2,
-                | Rgb::Argb4444 => 2,
-            }
-        }
-    }
-
     impl From<Rgb> for vals::OpfccrCm {
         fn from(format: Rgb) -> Self {
             match format {
@@ -207,126 +160,142 @@ pub mod format {
     }
 
     pub mod typelevel {
-        use crate::graphics::color::Alpha;
-        use crate::graphics::color::Grayscale;
+        use embedded_graphics::pixelcolor::Gray4;
+        use embedded_graphics::pixelcolor::Gray8;
+        use embedded_graphics::pixelcolor::Rgb888;
+        use embedded_graphics::prelude::PixelColor;
+        use embedded_graphics::prelude::RawData;
+        use embedded_graphics::prelude::RgbColor;
 
-        pub trait Rgb: Format {
+        use crate::graphics::color::A4;
+        use crate::graphics::color::A8;
+        use crate::graphics::color::Al44;
+        use crate::graphics::color::Al88;
+        use crate::graphics::color::Argb1555;
+        use crate::graphics::color::Argb4444;
+        use crate::graphics::color::Argb8888;
+
+        pub trait Rgb: Format + RgbColor {
             const FORMAT: super::Rgb;
         }
 
-        pub trait Format: crate::graphics::color::Format {
+        const fn clamp_min(n: usize, min: usize) -> usize {
+            if n < min { min } else { n }
+        }
+        pub trait Format: PixelColor {
             const FORMAT: super::Format;
-            const LEN_ALIGN: usize = Self::FORMAT.len_alignment();
+            const SIZE: usize = clamp_min(<Self::Raw as RawData>::BITS_PER_PIXEL / 8, 1);
+            const LEN_ALIGN: usize =
+                clamp_min(8 / <Self::Raw as RawData>::BITS_PER_PIXEL, 1);
+            const ALIGN: usize = core::mem::align_of::<Self::Raw>();
         }
 
         macro_rules! rgb_color {
-            ($id:ident, $repr:ty) => {
-                #[derive(Debug)]
-                #[derive(Clone, Copy)]
-                #[derive(PartialEq, Eq, PartialOrd, Ord)]
-                #[derive(Hash)]
-                #[derive(Default)]
-                pub struct $id;
-
-                impl crate::graphics::color::Format for $id {
-                    type Repr = $repr;
-                }
-
-                impl Format for $id {
+            ($ty:ident) => {
+                impl Format for $ty {
                     const FORMAT: super::Format =
                         super::Format::Rgb(<Self as Rgb>::FORMAT);
                 }
 
-                impl Rgb for $id {
-                    const FORMAT: super::Rgb = super::Rgb::$id;
+                impl Rgb for $ty {
+                    const FORMAT: super::Rgb = super::Rgb::$ty;
                 }
             };
         }
 
         macro_rules! color {
-            ($id:ident, $repr:ty) => {
-                #[derive(Debug)]
-                #[derive(Clone, Copy)]
-                #[derive(PartialEq, Eq, PartialOrd, Ord)]
-                #[derive(Hash)]
-                #[derive(Default)]
-                pub struct $id;
-
-                impl crate::graphics::color::Format for $id {
-                    type Repr = $repr;
-                }
-
-                impl Format for $id {
-                    const FORMAT: super::Format = super::Format::$id;
+            ($ty:ty, $format:ident) => {
+                impl Format for $ty {
+                    const FORMAT: super::Format = super::Format::$format;
                 }
             };
         }
 
-        rgb_color!(Argb8888, u32);
-        rgb_color!(Rgb888, u32);
-        rgb_color!(Argb1555, u16);
-        rgb_color!(Argb4444, u16);
+        // TODO: move formats out of DMA module
+        rgb_color!(Argb8888);
+        rgb_color!(Rgb888);
+        rgb_color!(Argb1555);
+        rgb_color!(Argb4444);
 
-        color!(L8, u8);
-        color!(AL44, u8);
-        color!(AL88, u16);
-        color!(L4, u8);
-        color!(A8, u8);
-        color!(A4, u8);
-
-        impl Grayscale for L8 {}
-        impl Grayscale for AL44 {}
-        impl Grayscale for AL88 {}
-        impl Grayscale for L4 {}
-        impl Grayscale for A8 {}
-        impl Grayscale for A4 {}
-
-        impl Alpha for Argb8888 {}
-        impl Alpha for Argb1555 {}
-        impl Alpha for Argb4444 {}
-        impl Alpha for AL44 {}
-        impl Alpha for AL88 {}
-        impl Alpha for A8 {}
-        impl Alpha for A4 {}
-
-        pub trait Color {
-            type Format: Format;
-        }
-
-        impl Color for crate::graphics::color::Argb8888 {
-            type Format = Argb8888;
-        }
-
-        impl Color for crate::graphics::color::Al88 {
-            type Format = AL88;
-        }
-
-        impl Color for embedded_graphics::pixelcolor::Gray8 {
-            type Format = L8;
-        }
-
-        impl Color for embedded_graphics::pixelcolor::Gray4 {
-            type Format = L4;
-        }
+        color!(Gray8, L8);
+        color!(Gray4, L4);
+        color!(Al88, AL88);
+        color!(Al44, AL44);
+        color!(A8, A8);
+        color!(A4, A4);
     }
 }
 
-#[derive(Debug)]
-#[derive(Clone, Copy)]
-#[derive(PartialEq, Eq)]
-#[derive(Hash)]
-pub struct InputConfig<'a, Format = format::typelevel::Argb8888>
+pub struct InputConfig<'a, Format = Argb8888>
 where
     Format: format::typelevel::Format,
 {
-    pub source: &'a [Format::Repr],
+    pub source: &'a [Storage<Format>],
     /// Offset after each line in pixels.
-    /// Must be aligned to the [`len_alignment`](`format::Format::len_alignment`)
+    /// Must be aligned to the [`LEN_ALIGN`](`format::typelevel::Format::LEN_ALIGN`)
     /// of [`format`](`Self::format`).
     pub offset: u16,
     pub alpha: Option<AlphaConfig>,
     /// RGB used in A4 and A8 format
     pub color: Option<[u8; 3]>,
+}
+
+impl<F> Debug for InputConfig<'_, F>
+where
+    F: format::typelevel::Format,
+    Storage<F>: Debug,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("InputConfig")
+            .field("source", &self.source)
+            .field("offset", &self.offset)
+            .field("alpha", &self.alpha)
+            .field("color", &self.color)
+            .finish()
+    }
+}
+
+impl<F> Clone for InputConfig<'_, F>
+where
+    F: format::typelevel::Format,
+{
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<F> Copy for InputConfig<'_, F> where F: format::typelevel::Format {}
+
+impl<F> PartialEq for InputConfig<'_, F>
+where
+    F: format::typelevel::Format,
+    Storage<F>: PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.source == other.source
+            && self.offset == other.offset
+            && self.alpha == other.alpha
+            && self.color == other.color
+    }
+}
+
+impl<F> Eq for InputConfig<'_, F>
+where
+    F: format::typelevel::Format,
+    Storage<F>: PartialEq,
+{
+}
+impl<F> Hash for InputConfig<'_, F>
+where
+    F: format::typelevel::Format,
+    Storage<F>: Hash,
+{
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.source.hash(state);
+        self.offset.hash(state);
+        self.alpha.hash(state);
+        self.color.hash(state);
+    }
 }
 
 #[derive(Debug)]
@@ -403,14 +372,14 @@ impl Dma2d {
         for (offset, value) in values.into_iter().take(0x100).enumerate() {
             // Safety: clut .. clut + 0x100 is outside of the AM
             unsafe {
-                clut.add(offset).write_volatile(value.into_u32());
+                clut.add(offset).write_volatile(value.into_storage());
             }
         }
     }
 
     pub async fn transfer_merge<OF, FF, BF>(
         &mut self,
-        dst: &mut [OF::Repr],
+        dst: &mut [Storage<OF>],
         out_cfg: &OutputConfig,
         foreground: &InputConfig<'_, FF>,
         background: Option<&InputConfig<'_, BF>>,
@@ -428,7 +397,7 @@ impl Dma2d {
 
     pub fn transfer_merge_blocking<OF, FF, BF>(
         &mut self,
-        dst: &mut [OF::Repr],
+        dst: &mut [Storage<OF>],
         out_cfg: &OutputConfig,
         foreground: &InputConfig<FF>,
         background: Option<&InputConfig<BF>>,
@@ -446,22 +415,19 @@ impl Dma2d {
 
     pub async fn transfer_memory<OF, FF>(
         &mut self,
-        dst: &mut [OF::Repr],
+        dst: &mut [Storage<OF>],
         out_cfg: &OutputConfig,
         foreground: &InputConfig<'_, FF>,
     ) where
         OF: Rgb,
         FF: Format,
     {
-        self.transfer_merge::<OF, _, format::typelevel::Argb8888>(
-            dst, out_cfg, foreground, None,
-        )
-        .await;
+        self.transfer_merge::<OF, _, Argb8888>(dst, out_cfg, foreground, None).await;
     }
 
     pub fn transfer_memory_blocking<OF, FF>(
         &mut self,
-        dst: &mut [OF::Repr],
+        dst: &mut [Storage<OF>],
         out_cfg: &OutputConfig,
         foreground: &InputConfig<'_, FF>,
     ) where
@@ -469,15 +435,13 @@ impl Dma2d {
         FF: Format,
     {
         fence(Ordering::SeqCst);
-        self.transfer_merge_blocking::<OF, _, format::typelevel::Argb8888>(
-            dst, out_cfg, foreground, None,
-        );
+        self.transfer_merge_blocking::<OF, _, Argb8888>(dst, out_cfg, foreground, None);
         fence(Ordering::SeqCst);
     }
 
     fn transfer_memory_cfg<OF, FF, BF>(
         &mut self,
-        dst: &mut [OF::Repr],
+        dst: &mut [Storage<OF>],
         out_cfg: &OutputConfig,
         foreground: &InputConfig<FF>,
         background: Option<&InputConfig<BF>>,
@@ -503,7 +467,7 @@ impl Dma2d {
 
     pub async fn transfer_onto<OF, IF>(
         &mut self,
-        dst: &mut [OF::Repr],
+        dst: &mut [Storage<OF>],
         out_cfg: &OutputConfig,
         foreground: &InputConfig<'_, IF>,
         background: Option<AlphaConfig>,
@@ -520,7 +484,7 @@ impl Dma2d {
 
     pub fn transfer_onto_blocking<OF, IF>(
         &mut self,
-        dst: &mut [OF::Repr],
+        dst: &mut [Storage<OF>],
         out_cfg: &OutputConfig,
         foreground: &InputConfig<'_, IF>,
         background: Option<AlphaConfig>,
@@ -537,7 +501,7 @@ impl Dma2d {
 
     fn transfer_onto_cfg<OF, IF>(
         &mut self,
-        dst: &mut [OF::Repr],
+        dst: &mut [Storage<OF>],
         out_cfg: &OutputConfig,
         foreground: &InputConfig<IF>,
         background: Option<AlphaConfig>,
@@ -560,7 +524,7 @@ impl Dma2d {
 
     pub async fn fill<Format>(
         &mut self,
-        dst: &mut [Format::Repr],
+        dst: &mut [Storage<Format>],
         out_cfg: &OutputConfig,
         color: Argb8888,
     ) where
@@ -572,7 +536,7 @@ impl Dma2d {
 
     pub fn fill_blocking<Format>(
         &mut self,
-        dst: &mut [Format::Repr],
+        dst: &mut [Storage<Format>],
         out_cfg: &OutputConfig,
         color: Argb8888,
     ) where
@@ -584,49 +548,36 @@ impl Dma2d {
 
     fn fill_cfg<Format>(
         &mut self,
-        dst: &mut [Format::Repr],
+        dst: &mut [Storage<Format>],
         out_cfg: &OutputConfig,
         color: Argb8888,
     ) where
         Format: Rgb,
     {
         self.output_cfg::<Format>(dst, out_cfg);
-        let color = regs::Ocolr(match <Format as Rgb>::FORMAT {
-            | format::Rgb::Argb8888 | format::Rgb::Rgb888 => color.into_u32().to_le(),
-            | format::Rgb::Rgb565 => {
-                let red = color.red() >> 3;
-                let green = color.green() >> 2;
-                let blue = color.blue() >> 3;
-                let mut color = red as u32;
-                color <<= 6;
-                color |= green as u32;
-                color <<= 5;
-                color |= blue as u32;
-                color
-            }
-            | format::Rgb::Argb1555 => {
-                let alpha = color.alpha() >> 7;
-                let red = color.red() >> 3;
-                let green = color.green() >> 3;
-                let blue = color.blue() >> 3;
-                let mut color = alpha as u32;
-                color <<= 1;
-                color |= red as u32;
-                color <<= 5;
-                color |= green as u32;
-                color <<= 5;
-                color |= blue as u32;
-                color
-            }
-            | format::Rgb::Argb4444 => {
-                let alpha = color.alpha();
-                let red = color.red() >> 4;
-                let green = color.green();
-                let blue = color.blue() >> 4;
 
-                u32::from_le_bytes([0, 0, alpha | red, green | blue])
-            }
-        });
+        let white = <Format as RgbColor>::WHITE;
+        let r_truncate = white.r().leading_zeros();
+        let g_truncate = white.g().leading_zeros();
+        let b_truncate = white.b().leading_zeros();
+        let a_truncate = match <Format as Rgb>::FORMAT {
+            | format::Rgb::Argb8888 => 0,
+            | format::Rgb::Argb4444 => 4,
+            | format::Rgb::Argb1555 => 7,
+            | _ => 8,
+        };
+        let a = color.a().wrapping_shl(a_truncate) as u32;
+        let r = color.r().wrapping_shl(r_truncate) as u32;
+        let g = color.g().wrapping_shl(g_truncate) as u32;
+        let b = color.b().wrapping_shl(b_truncate) as u32;
+
+        let b_shift = 0;
+        let g_shift = b_shift + (8 - b_truncate);
+        let r_shift = g_shift + (8 - g_truncate);
+        let a_shift = r_shift + (8 - r_truncate);
+        let color = a << a_shift | r << b_shift | g << g_shift | b << b_shift;
+        let color = regs::Ocolr(color);
+
         DMA2D.ocolr().write_value(color);
         DMA2D.cr().modify(|w| w.set_mode(vals::Mode::REGISTER_TO_MEMORY));
     }
@@ -643,8 +594,8 @@ impl Dma2d {
         let width = out_cfg.width as usize;
         let height = out_cfg.height as usize;
         assert_eq!(in_cfg.source.len(), width * height + offset * (height - 1));
-        assert!(offset.is_multiple_of(Format::FORMAT.len_alignment()));
-        assert!(width.is_multiple_of(Format::FORMAT.len_alignment()));
+        assert!(offset.is_multiple_of(Format::LEN_ALIGN));
+        assert!(width.is_multiple_of(Format::LEN_ALIGN));
 
         if background {
             DMA2D.bgpfccr().write(|w| {
@@ -711,7 +662,7 @@ impl Dma2d {
         }
     }
 
-    fn output_cfg<Format>(&mut self, dst: &mut [Format::Repr], cfg: &OutputConfig)
+    fn output_cfg<Format>(&mut self, dst: &mut [Storage<Format>], cfg: &OutputConfig)
     where
         Format: Rgb,
     {
@@ -857,7 +808,7 @@ impl<'a, F> InputConfig<'a, F>
 where
     F: Format,
 {
-    pub const fn copy(source: &'a [F::Repr], offset: u16) -> Self {
+    pub const fn copy(source: &'a [Storage<F>], offset: u16) -> Self {
         Self {
             source,
             offset,
@@ -889,25 +840,22 @@ where
 
 impl<F> InputConfig<'_, F>
 where
-    F: format::typelevel::Format + Grayscale,
+    F: format::typelevel::Format + AlphaColor,
 {
     pub const fn blend_color(self, color: Argb8888) -> Self {
         Self {
             alpha: Some(AlphaConfig {
-                alpha: color.alpha(),
+                alpha: color.a(),
                 mode: AlphaMode::Multiply,
             }),
-            color: Some([color.red(), color.green(), color.blue()]),
+            color: Some([color.r(), color.g(), color.b()]),
             ..self
         }
     }
 }
 
-impl<'a> InputConfig<'a, format::typelevel::Argb8888> {
-    pub const fn argb(
-        source: &'a [<format::typelevel::Argb8888 as crate::graphics::color::Format>::Repr],
-        offset: u16,
-    ) -> Self {
+impl<'a> InputConfig<'a, Argb8888> {
+    pub const fn argb(source: &'a [Storage<Argb8888>], offset: u16) -> Self {
         Self {
             source,
             offset,
@@ -917,11 +865,8 @@ impl<'a> InputConfig<'a, format::typelevel::Argb8888> {
     }
 }
 
-impl<'a> InputConfig<'a, format::typelevel::Rgb888> {
-    pub const fn rgb(
-        source: &'a [<format::typelevel::Rgb888 as crate::graphics::color::Format>::Repr],
-        offset: u16,
-    ) -> Self {
+impl<'a> InputConfig<'a, Rgb888> {
+    pub const fn rgb(source: &'a [Storage<Rgb888>], offset: u16) -> Self {
         Self {
             source,
             offset,
