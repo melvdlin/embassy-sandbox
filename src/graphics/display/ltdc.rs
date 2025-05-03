@@ -16,8 +16,7 @@ use embassy_stm32::pac::ltdc::vals::Pcpol;
 use embassy_stm32::pac::ltdc::vals::Vspol;
 use embassy_stm32::peripherals;
 use embassy_sync::waitqueue::AtomicWaker;
-
-use crate::graphics::color::Argb8888;
+use gui_widgets::color::Argb8888;
 
 pub type Peripheral = peripherals::LTDC;
 type PacLtdc = pac::ltdc::Ltdc;

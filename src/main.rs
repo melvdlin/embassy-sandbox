@@ -17,22 +17,12 @@ use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_futures::join::join3;
 use embassy_net::Ipv4Address;
-use embassy_sandbox::graphics::color::Argb8888;
 use embassy_sandbox::graphics::display;
 use embassy_sandbox::graphics::display::DoubleBuffer;
 use embassy_sandbox::graphics::display::LayerConfig;
-use embassy_sandbox::graphics::gui::AcceleratedBase;
-use embassy_sandbox::graphics::gui::Alignment;
-use embassy_sandbox::graphics::gui::Drawable;
-use embassy_sandbox::graphics::gui::ext::AcceleratedExt;
-use embassy_sandbox::graphics::gui::text::font;
-use embassy_sandbox::graphics::gui::text::textbox;
-use embassy_sandbox::graphics::gui::text::textbox::TextBox;
 use embassy_sandbox::util::typelevel;
 use embassy_sandbox::*;
 use embassy_stm32::bind_interrupts;
-#[allow(unused_imports)]
-use embassy_stm32::dsihost::DsiHost;
 use embassy_stm32::gpio;
 use embassy_stm32::time::Hertz;
 use embassy_sync::blocking_mutex::raw::RawMutex;
@@ -44,6 +34,14 @@ use embassy_time::Timer;
 use embedded_graphics::geometry::AnchorPoint;
 use embedded_graphics::prelude::Dimensions;
 use embedded_graphics::prelude::Point;
+use gui_widgets::color::Argb8888;
+use gui_widgets::gui::AcceleratedBase;
+use gui_widgets::gui::Alignment;
+use gui_widgets::gui::Drawable;
+use gui_widgets::gui::ext::AcceleratedExt;
+use gui_widgets::gui::text::font;
+use gui_widgets::gui::text::textbox;
+use gui_widgets::gui::text::textbox::TextBox;
 use rand_core::RngCore;
 
 #[inline(never)]

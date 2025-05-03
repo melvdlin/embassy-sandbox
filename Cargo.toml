@@ -98,6 +98,7 @@ sntpc = { version = "0.3.9", default-features = false, features = ["async"] }
 static_cell = "2.1.0"
 stm32-fmc = { version = "0.3.2", optional = true }
 ttftp = "0.2.0"
+gui-widgets = { path = "../gui-widgets" }
 
 [patch.crates-io]
 smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp", rev = "3e3afb62b292cc027c8baeee40bce7b644392115" }

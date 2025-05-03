@@ -18,6 +18,11 @@ use embedded_graphics::prelude::DrawTarget;
 use embedded_graphics::prelude::OriginDimensions;
 use embedded_graphics::prelude::PixelColor;
 use embedded_graphics::prelude::Size;
+use gui_widgets::color::AlphaColor;
+use gui_widgets::color::Argb8888;
+use gui_widgets::color::Storage;
+use gui_widgets::gui::Accelerated;
+use gui_widgets::gui::AcceleratedBase;
 pub use ltdc::ErrorInterruptHandler as LtdcErrorInterruptHandler;
 pub use ltdc::InterruptHandler as LtdcInterruptHandler;
 pub use ltdc::LayerConfig;
@@ -29,11 +34,6 @@ pub use otm8009a::Orientation;
 pub use otm8009a::WIDTH;
 
 use super::accelerated::Framebuffer;
-use super::color::AlphaColor;
-use super::color::Argb8888;
-use super::color::Storage;
-use super::gui::Accelerated;
-use super::gui::AcceleratedBase;
 use crate::util::typelevel::MapOnce;
 
 pub struct Display<'a> {

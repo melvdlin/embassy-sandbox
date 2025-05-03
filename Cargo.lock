@@ -85,9 +85,9 @@ dependencies = [
 
 [[package]]
 name = "bytemuck"
-version = "1.18.0"
+version = "1.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94bbb0ad554ad961ddc5da507a12a29b14e4ae5bda06b19f575a3e6079d2e2ae"
+checksum = "9134a6ef01ce4b366b50689c94f82c14bc72bc5d0386829828a2e2752ef7958c"
 dependencies = [
  "bytemuck_derive",
 ]
@@ -320,8 +320,9 @@ dependencies = [
  "embedded-io-async",
  "futures-util",
  "getargs",
+ "gui-widgets",
  "heapless",
- "itertools",
+ "itertools 0.13.0",
  "macro_rules_attribute",
  "memchr",
  "nom",
@@ -619,6 +620,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "084c6b182b01dec54ff12986b9cc8859a9b0d92b074f878c382a4481a070e66e"
 
 [[package]]
+name = "gui-widgets"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "embedded-graphics",
+ "itertools 0.14.0",
+]
+
+[[package]]
 name = "hash32"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -647,6 +657,15 @@ name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
 dependencies = [
  "either",
 ]

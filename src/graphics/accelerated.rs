@@ -13,16 +13,16 @@ use embedded_graphics::prelude::OriginDimensions;
 use embedded_graphics::prelude::Point;
 use embedded_graphics::prelude::Size;
 use embedded_graphics::primitives::Rectangle;
+use gui_widgets::color::AlphaColor;
+use gui_widgets::color::Argb8888;
+use gui_widgets::color::Storage;
+use gui_widgets::gui::Accelerated;
+use gui_widgets::gui::AcceleratedBase;
 
-use super::color::AlphaColor;
-use super::color::Argb8888;
-use super::color::Storage;
 use super::display::dma2d;
 use super::display::dma2d::Dma2d;
 use super::display::dma2d::InputConfig;
 use super::display::dma2d::OutputConfig;
-use super::gui::Accelerated;
-use super::gui::AcceleratedBase;
 
 #[cfg(not(target_pointer_width = "32"))]
 compile_error!("targets with pointer width other than 32 not supported");

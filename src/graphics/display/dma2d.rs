@@ -17,10 +17,9 @@ use embassy_sync::waitqueue::AtomicWaker;
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::RgbColor;
 use format::typelevel::Rgb;
-
-use crate::graphics::color::AlphaColor;
-use crate::graphics::color::Argb8888;
-use crate::graphics::color::Storage;
+use gui_widgets::color::AlphaColor;
+use gui_widgets::color::Argb8888;
+use gui_widgets::color::Storage;
 
 pub type Peripheral = peripherals::DMA2D;
 type PacDma2d = pac::dma2d::Dma2d;
@@ -166,14 +165,13 @@ pub mod format {
         use embedded_graphics::prelude::PixelColor;
         use embedded_graphics::prelude::RawData;
         use embedded_graphics::prelude::RgbColor;
-
-        use crate::graphics::color::A4;
-        use crate::graphics::color::A8;
-        use crate::graphics::color::Al44;
-        use crate::graphics::color::Al88;
-        use crate::graphics::color::Argb1555;
-        use crate::graphics::color::Argb4444;
-        use crate::graphics::color::Argb8888;
+        use gui_widgets::color::A4;
+        use gui_widgets::color::A8;
+        use gui_widgets::color::Al44;
+        use gui_widgets::color::Al88;
+        use gui_widgets::color::Argb1555;
+        use gui_widgets::color::Argb4444;
+        use gui_widgets::color::Argb8888;
 
         pub trait Rgb: Format + RgbColor {
             const FORMAT: super::Rgb;
@@ -575,10 +573,14 @@ impl Dma2d {
         let g_shift = b_shift + (8 - b_truncate);
         let r_shift = g_shift + (8 - g_truncate);
         let a_shift = r_shift + (8 - r_truncate);
-        let color = a << a_shift | r << b_shift | g << g_shift | b << b_shift;
-        let color = regs::Ocolr(color);
+        let a_fill = a << a_shift;
+        let r_fill = r << r_shift;
+        let g_fill = g << g_shift;
+        let b_fill = b << b_shift;
+        let fill_color = core::hint::black_box(a_fill | r_fill | g_fill | b_fill);
+        let colorr = regs::Ocolr(fill_color);
 
-        DMA2D.ocolr().write_value(color);
+        DMA2D.ocolr().write_value(colorr);
         DMA2D.cr().modify(|w| w.set_mode(vals::Mode::REGISTER_TO_MEMORY));
     }
 
