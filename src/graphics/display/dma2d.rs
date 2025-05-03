@@ -577,10 +577,9 @@ impl Dma2d {
         let r_fill = r << r_shift;
         let g_fill = g << g_shift;
         let b_fill = b << b_shift;
-        let fill_color = core::hint::black_box(a_fill | r_fill | g_fill | b_fill);
-        let colorr = regs::Ocolr(fill_color);
+        let argb = a_fill | r_fill | g_fill | b_fill;
 
-        DMA2D.ocolr().write_value(colorr);
+        DMA2D.ocolr().write_value(regs::Ocolr(argb));
         DMA2D.cr().modify(|w| w.set_mode(vals::Mode::REGISTER_TO_MEMORY));
     }
 
