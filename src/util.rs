@@ -1,5 +1,38 @@
+pub mod drop_guard;
 pub mod mem;
 pub mod typelevel;
+
+#[macro_export]
+macro_rules! forget_destructure {
+    ($type:ty { $( $field:ident ),* $(,)? } = $value:expr) => {
+        // Check that no fields were forgotten
+        if false { let $type { $($field: _,)* } =  $value; }
+        let value = core::mem::ManuallyDrop::new($value);
+        $(
+            let $field = unsafe { core::ptr::read(&raw const value.$field) };
+        )*
+  };
+}
+
+#[macro_export]
+macro_rules! forget_destructure_tuple {
+    ($type:tt { $( $field:ident ),* $(,)? } = $value:expr) => {
+        // Check that no fields were forgotten
+        if false { let $type ( $($crate::ignore_and!($field, _),)* ) =  $value; }
+        let value = core::mem::ManuallyDrop::new($value);
+        let $type ($($field,)*) = &*value;
+        $(
+            let $field = unsafe { core::ptr::read($field) };
+        )*
+  };
+}
+
+#[macro_export]
+macro_rules! ignore_and {
+    ($ignore:tt, $and:tt) => {
+        $and
+    };
+}
 
 pub trait ByteSliceExt {
     fn trim_ascii_start_mut(&mut self) -> &mut Self;

@@ -49,6 +49,8 @@ bitflags::bitflags! {
 
 pub use format::typelevel::Format;
 
+use crate::util::drop_guard::DropGuard;
+
 pub mod format {
     use embassy_stm32::pac::dma2d::vals;
 
@@ -698,6 +700,7 @@ impl Dma2d {
 
     async fn run(&mut self) {
         let mut polled = false;
+        let mut guard = None;
         poll_fn(|cx| {
             if !mem::replace(&mut polled, true) {
                 cortex_m::interrupt::free(|_cs| {
@@ -705,11 +708,15 @@ impl Dma2d {
                     Interrupts::clear_pending();
                     Interrupts::enable_vector();
 
+                    guard = Some(DropGuard::new(|| {
+                        DMA2D.cr().modify(|w| w.set_abort(vals::Abort::ABORT_REQUEST));
+                    }));
                     DMA2D.cr().modify(|w| w.set_start(vals::CrStart::START));
 
                     Poll::Pending
                 })
             } else {
+                mem::forget(guard.take());
                 Poll::Ready(())
             }
         })
@@ -723,6 +730,9 @@ impl Dma2d {
     }
 
     fn run_blocking(&mut self) {
+        Interrupts::clear_pending();
+        Interrupts::enable_vector();
+        DMA2D.cr().modify(|w| w.set_start(vals::CrStart::START));
         loop {
             let flags = Interrupts::read();
             flags.clear();
